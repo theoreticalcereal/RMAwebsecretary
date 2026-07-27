@@ -1,4 +1,4 @@
-# Stage 1 — UI Shell
+# Stage 1 - UI Shell
 
 Static calendar UI with hardcoded sample lessons. No backend, no Netlify
 Functions, no AI. The goal here is purely to nail the layout and interaction
@@ -19,7 +19,7 @@ folder with any static server:
 npx serve public
 ```
 
-## What's NOT here yet (comes in later stages)
+## Later stages
 
 - No backend / storage (Stage 2)
 - Manual add/delete don't persist anywhere (Stage 3)
