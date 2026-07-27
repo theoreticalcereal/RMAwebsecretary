@@ -156,13 +156,9 @@
 </head>
 <body>
 
-<div class="stage-banner">
-  Stage 1: UI shell only. Data below is hardcoded sample data — nothing is saved, no backend calls are made yet.
-</div>
-
 <header>
   <h1>Lesson Secretary</h1>
-  <p>Weekly lesson schedule — type a request below, or add lessons manually.</p>
+  <p>Weekly lesson schedule: type a request below, or add lessons manually.</p>
 </header>
 
 <main>
@@ -202,12 +198,12 @@
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-// STAGE 1: hardcoded sample data standing in for the backend.
-// This whole array gets deleted in Stage 3 once real endpoints exist.
+// STAGE 1: hardcoded sample data standing in for the backend
+// whole array cleaned once AI backend added
 let sampleLessons = [
-  { id: 1, student: "Sam", subject: "Algebra", day_of_week: 1, start_time: "16:00", end_time: "17:00", active: true },
+  { id: 1, student: "Sam", subject: "Cello", day_of_week: 1, start_time: "16:00", end_time: "17:00", active: true },
   { id: 2, student: "Mia", subject: "Piano", day_of_week: 3, start_time: "17:00", end_time: "18:00", active: true },
-  { id: 3, student: "Jordan", subject: "Chemistry", day_of_week: 1, start_time: "18:00", end_time: "19:00", active: true },
+  { id: 3, student: "Jordan", subject: "Violin", day_of_week: 1, start_time: "18:00", end_time: "19:00", active: true },
 ];
 
 function formatTime(hhmm) {
@@ -270,7 +266,7 @@ function renderCalendar() {
   });
 }
 
-// Manual add form — Stage 1: just pushes into the local array, nothing persists.
+// Manual add form for stage 1: just pushes into the local array, nothing persists
 document.getElementById("manual-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const newId = sampleLessons.length ? Math.max(...sampleLessons.map((l) => l.id)) + 1 : 1;
