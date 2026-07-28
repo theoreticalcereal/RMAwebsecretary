@@ -1,50 +1,42 @@
 # Lesson Secretary
 
-A simple lesson scheduling app with a calendar view, manual add/edit/delete,
-and a natural language assistant powered by NVIDIA's NIM API. Runs on
-Netlify with Blobs for storage, so there's no separate database to manage.
+A lesson scheduling app with a public calendar view, a natural language
+assistant powered by NVIDIA's NIM API, and a password protected admin
+dashboard for the maintainer. Runs on Netlify with Blobs for storage, so
+there's no separate database to manage.
 
-The assistant is capped at 5 prompts per day, per visitor. Each browser
-gets a cookie the first time it uses the assistant, and that cookie is
-what the daily limit is tracked against. This is tracked server-side, so
-it can't be reset by reloading the page or clearing localStorage (clearing
-cookies or switching browsers would get a fresh bucket though). If someone
-hits their cap, the app tells them it can't help further that day and
-sends a one-time email to the maintainer so a human can follow up if needed.
+## How it's laid out
+
+- **Public page** (`/`): shows the calendar, read-only, plus the AI
+  assistant box. This is the only way a visitor can add, cancel, or remove
+  a lesson. There's no manual add form here anymore.
+- **Admin dashboard** (`/admin`): password protected. Lets the maintainer
+  add, edit, and delete lessons directly, and shows a live breakdown of
+  today's assistant usage per visitor.
+- **Assistant**: capped at 5 prompts per day, per visitor, tracked with a
+  cookie. Once a visitor hits the cap, the app tells them it can't help
+  further today and emails the maintainer once.
 
 ## What's included
 
-- `netlify/functions/_store.js`: Blobs storage helpers, including
-  `readUsage`/`writeUsage` for the per-visitor daily prompt counter
-  (`usage:YYYY-MM-DD:<visitorId>`)
-- `netlify/functions/_cookies.js`: reads the incoming `visitor_id` cookie,
-  or generates a new one if it's missing
+- `netlify/functions/_store.js`: Blobs storage helpers (lessons,
+  exceptions, per-visitor usage counters, and a usage listing function for
+  the admin dashboard)
+- `netlify/functions/_cookies.js`: reads or generates the `visitor_id`
+  cookie used for the assistant's daily limit
 - `netlify/functions/_notify.js`: emails the maintainer via Resend the
   first time a given visitor's daily cap is exceeded
-- `netlify/functions/lessons.js`: manual CRUD for lessons, add/edit/delete
-  with conflict checking
-- `netlify/functions/assistant.js`: NIM-powered assistant, gated by
-  `DAILY_PROMPT_LIMIT = 5` per visitor. Also exposes `GET /api/assistant`
-  to check today's usage for the current visitor without spending a prompt
-- `public/index.html`: full calendar UI, manual form, and assistant box,
-  showing "N of 5 requests left today" and disabling the input once that
-  visitor's limit is hit
-
-## How the limit works
-
-Each browser that hits the assistant gets a `visitor_id` cookie (a random
-UUID, set with a one year expiry) if it doesn't already have one. Usage is
-tracked server-side in Blobs, keyed by both the date and that visitor ID,
-so it can't be reset by reloading or clearing localStorage.
-
-Manual calendar actions (add and delete via the form) aren't limited at
-all, since they never call the AI.
-
-Once a visitor's 6th request of the day comes in, `assistant.js` skips the
-NIM call entirely, returns a message saying it can't help further today,
-and (only the first time this happens for that visitor that day) emails
-the maintainer. Each visitor's limit resets automatically at midnight UTC,
-since a new date means a new counter key.
+- `netlify/functions/_admin_auth.js`: checks the `x-admin-password` header
+  against `ADMIN_PASSWORD`
+- `netlify/functions/lessons.js`: public, **read-only**. Returns the
+  lesson list for the calendar view.
+- `netlify/functions/admin-lessons.js`: admin-only CRUD for lessons
+  (password protected)
+- `netlify/functions/admin-stats.js`: admin-only usage stats for today
+- `netlify/functions/assistant.js`: the NIM-powered assistant, the only
+  way public visitors can change the schedule
+- `public/index.html`: public calendar + assistant
+- `public/admin/index.html`: password gated admin dashboard
 
 ## Setup
 
@@ -58,6 +50,7 @@ npm install
 NVIDIA_NIM_API_KEY=nvapi-...      # from https://build.nvidia.com
 RESEND_API_KEY=re_...             # from https://resend.com (free tier)
 MAINTAINER_EMAIL=you@example.com  # where the "limit reached" email goes
+ADMIN_PASSWORD=choose-a-password  # protects /admin
 ```
 
 Set these locally in a `.env` file (already gitignored, picked up
@@ -67,32 +60,69 @@ automatically by `netlify dev`), or in production with:
 netlify env:set NVIDIA_NIM_API_KEY nvapi-...
 netlify env:set RESEND_API_KEY re_...
 netlify env:set MAINTAINER_EMAIL you@example.com
+netlify env:set ADMIN_PASSWORD choose-a-password
 ```
 
-Without `RESEND_API_KEY` and `MAINTAINER_EMAIL` set, the rate limit still
-works correctly. It just skips sending the email (logged as a warning)
-instead of failing.
-
-The email sends from `onboarding@resend.dev`, which works without domain
-verification on Resend's free tier. You can swap the `from` address in
-`netlify/functions/_notify.js` if you verify your own domain later.
+Without `RESEND_API_KEY`/`MAINTAINER_EMAIL` set, the rate limit still
+works, it just skips the email (logged as a warning). Without
+`ADMIN_PASSWORD` set, every request to `/admin`'s API endpoints is
+rejected, since there's nothing to check the password against.
 
 ```bash
 netlify dev
 ```
 
+## Troubleshooting "internal error"
+
+If you're seeing a generic internal error on either the assistant or
+lesson endpoints, the most common cause is Netlify Blobs not being
+available in that deploy context. A few things to check:
+
+0. **"...has not been configured with a 'uncachedEdgeURL' property"**:
+   this specific error means the store was requested with strong
+   consistency, which needs Blobs config that isn't always present in
+   every context (some `netlify dev` setups, for example). This app uses
+   the default eventual consistency for exactly this reason, so you
+   shouldn't hit this anymore. If you do (say, after pulling an older
+   copy of the code), check `netlify/functions/_store.js` and make sure
+   `getStore()` is called without `consistency: "strong"`.
+1. **Look at the actual error detail.** Every endpoint in this version
+   returns `{ "error": "internal error", "detail": "..." }` instead of a
+   bare message, and the frontend now displays that detail text instead of
+   swallowing it. Open your browser's dev tools network tab and look at
+   the failed request's response body, or check `netlify dev`'s terminal
+   output / your site's function logs in the Netlify dashboard. The detail
+   field will say what actually failed (missing env var, Blobs
+   initialization failure, NIM API error, etc).
+2. **Confirm you're running through Netlify, not a plain static server.**
+   Functions and Blobs only work via `netlify dev` or an actual Netlify
+   deploy. Opening `public/index.html` directly in a browser, or serving
+   it with something like `npx serve`, will not have working `/api/*`
+   routes at all.
+3. **Confirm env vars are set and the site has been redeployed since.**
+   Env vars set after a deploy don't apply retroactively, you need a new
+   deploy (or `netlify dev` restart locally) to pick them up.
+4. **Confirm the site is actually linked** (`netlify init` or
+   `netlify link` run at least once), since Blobs needs a linked site
+   context to know where to store data.
+
 ## Try it
 
-1. Send 5 assistant requests from the same browser. The counter should
-   count down each time.
-2. Send a 6th. You should get a message saying it can't help further
-   today, and (if Resend is configured) you should get one email.
-3. Send a 7th. It should get blocked the same way, but no second email.
-4. Open the app in a different browser (or an incognito window). It
-   should have its own fresh count of 5, since it gets its own cookie.
-5. Confirm manual add and delete still work with no restriction.
-6. Wait until after midnight UTC (or manually delete that visitor's
-   `usage:YYYY-MM-DD:<visitorId>` blob) and confirm the counter resets.
+**Public page:**
+1. Ask the assistant to add a lesson, it should show up on the calendar.
+2. Ask something ambiguous, it should ask a clarifying question instead of
+   guessing.
+3. Send 5 requests, then a 6th, confirm you get the "can't help further
+   today" message and (if Resend is configured) the maintainer gets one
+   email.
+
+**Admin dashboard:**
+1. Go to `/admin`, log in with `ADMIN_PASSWORD`.
+2. Add a lesson directly, confirm it shows up on both the admin and public
+   calendars.
+3. Check the usage table, it should reflect prompts used by any visitor
+   who has used the assistant today.
+4. Delete a lesson, confirm it disappears from both views.
 
 ## Deploying
 
@@ -103,11 +133,12 @@ netlify deploy --prod
 
 ## Known limitations and possible next steps
 
-- Single user data model, no authentication. Anyone with the URL can read
-  and write the schedule. The per-visitor cookie limits assistant usage
-  per browser, but doesn't restrict who can use the app.
-- The cookie is easy to clear or work around by a determined user (private
-  browsing, clearing cookies, switching browsers). It's meant to catch
-  accidental overuse, not to be a hard security boundary.
-- Exceptions (one-off cancellations) are stored but not yet shown on the
-  calendar.
+- The admin password is a single shared secret sent on every request. This
+  is fine for personal/single-maintainer use, but isn't a substitute for
+  proper authentication if more than one person needs admin access, or if
+  the stakes go up.
+- The per-visitor cookie is easy to work around (clearing cookies, private
+  browsing, different browser). It's meant to catch accidental overuse,
+  not to be a hard security boundary.
+- Exceptions (one-off cancellations made via the assistant) are stored but
+  not yet shown on either calendar view.

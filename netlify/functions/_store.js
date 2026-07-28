@@ -13,7 +13,14 @@ function getLessonStore(event) {
     // Required in "Lambda compatibility mode", which is what Netlify
     // Functions use by default for CommonJS handlers like this one.
     connectLambda(event);
-    return getStore({ name: "lesson-secretary", consistency: "strong" });
+    // Deliberately using the default (eventual) consistency rather than
+    // "strong" here. Strong consistency requires an 'uncachedEdgeURL'
+    // property that isn't always present (e.g. some netlify dev / local
+    // contexts), which surfaces as an opaque read failure. This app writes
+    // a handful of times a day, so eventual consistency (propagates in
+    // low single-digit seconds) is more than good enough and avoids that
+    // failure mode entirely.
+    return getStore({ name: "lesson-secretary" });
   } catch (err) {
     // Blobs setup failures are the most common cause of an opaque 500 on
     // every request. Wrap with a clearer message so it's diagnosable from
