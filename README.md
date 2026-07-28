@@ -1,27 +1,36 @@
-# Stage 1 - UI Shell
+# Stage 2: Backend JSON Store
 
-Static calendar UI with hardcoded sample lessons. No backend, no Netlify
-Functions, no AI. The goal here is purely to nail the layout and interaction
-feel before wiring anything up.
+netlify functions + netlify blobs storage works independently of any UI
+goal is to prove the storage layer persists data correctly before
+building anything on top of it
 
-## Current repository status
+## Existing infrastructure
 
-- `public/index.html` — full calendar grid, manual-add form UI, assistant
-  input box UI. All "data" lives in a local JS array (`sampleLessons`) and
-  is lost on refresh.
+- `netlify.toml` routes `/api/*` to Netlify Functions
+- `netlify/functions/_store.js` shared helpers: `getLessonStore`,
+  `readLessons`/`writeLessons`, `readExceptions`/`writeExceptions`,
+  `jsonResponse`, `nextId`, `timesOverlap` (the last one isn't used yet will be wired into validation in Stage 3)
+- `netlify/functions/lessons.js` minimal `GET` (list) + `POST` (add) only.
+  No validation, no conflict checking, no update/delete yet.
 
-## Testing
+there is **no `public/` UI in this stage** — it's backend-only tested directly via HTTP
 
-Open `public/index.html` directly in a browser, or serve the `public/`
-folder with any static server:
+## Tests
 
 ```bash
-npx serve public
+# Add a lesson
+curl -X POST http://localhost:8888/api/lessons \
+  -H "Content-Type: application/json" \
+  -d '{"student":"Sam","subject":"Algebra","day_of_week":1,"start_time":"16:00","end_time":"17:00"}'
+
+# List lessons and confirm it persisted
+curl http://localhost:8888/api/lessons
 ```
 
-## Later stages
+## Missing
 
-- No backend / storage (Stage 2)
-- Manual add/delete don't persist anywhere (Stage 3)
-- Assistant box is a visual placeholder only (Stage 4)
+- No validation or conflict checking (Stage 3)
+- No update/delete (Stage 3)
+- No frontend calendar (Stage 3 reconnects Stage 1's UI to this backend)
+- No AI assistant (Stage 4)
 - No rate limiting (Stage 5)
