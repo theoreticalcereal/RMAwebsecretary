@@ -68,7 +68,7 @@ Rules:
 - "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful answer using the CURRENT LESSONS provided below, action "query".
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.
-- Include a "reason" value only when the user explicitly provides a reason for a change request. Use null otherwise.`;
+- Include a "reason" value whenever the request contains a natural-language reason (for example, phrases like "because", "since", "so that", or "for"), even if short. Use null only when no reason is present.`;
 
 function nowInMs() {
   return Date.now();
@@ -303,6 +303,19 @@ function findLessonByContext(lessons, action) {
   if (!action) return null;
   if (action.lesson_id) return lessons.find((l) => l.id === action.lesson_id);
 
+  if (action.action === "reschedule" && action.old_start_time) {
+    const oldMatches = lessons.filter((l) => l.active !== false && l.day_of_week === action.day_of_week && l.start_time === action.old_start_time);
+    if (oldMatches.length === 1) return oldMatches[0];
+    if (oldMatches.length > 1) {
+      const exactMatch = oldMatches.find((l) => action.student && normalizeName(l.student) === normalizeName(action.student));
+      if (exactMatch) return exactMatch;
+      if (action.subject) {
+        const bySubject = oldMatches.find((l) => normalizeName(l.subject) === normalizeName(action.subject));
+        if (bySubject) return bySubject;
+      }
+    }
+  }
+
   const subject = normalizeName(action.subject);
   const student = normalizeName(action.student);
 
@@ -413,7 +426,7 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
 
     const existing = lessons[lessonIdx];
     const originalStart = action.start_time || existing.start_time;
-    const originalDuration = toMinutes(existing.end_time) - toMinutes(existing.start_time);
+    const originalDuration = inferLessonMinutes(existing.start_time, existing.end_time);
     const derivedEnd = action.end_time || addMinutesToTime(originalStart, Number.isFinite(originalDuration) ? originalDuration : 60);
     if (!originalStart || !derivedEnd) {
       return {
@@ -642,32 +655,118 @@ function isFastActionComplete(action) {
   return action.action === "query" || action.action === "delete";
 }
 
+function inferLessonMinutes(startTime, endTime) {
+  const start = toMinutes(startTime);
+  const end = toMinutes(endTime);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  let duration = end - start;
+  if (duration <= 0) duration += 24 * 60;
+  return Number.isFinite(duration) ? duration : null;
+}
+
+function enrichParsedAction(action, lessons) {
+  if (!action || action.action !== "reschedule") return action;
+
+  const lessonFromContext = action.lesson_id ? lessons.find((l) => l.id === action.lesson_id && l.active !== false) : findLessonByContext(lessons, action);
+  if (!lessonFromContext) return action;
+
+  const enriched = cloneAction(action);
+  if (!enriched.lesson_id) enriched.lesson_id = lessonFromContext.id;
+  if (!enriched.end_time && enriched.start_time) {
+    const duration = inferLessonMinutes(lessonFromContext.start_time, lessonFromContext.end_time);
+    if (duration && duration > 0 && Number.isFinite(duration)) {
+      enriched.end_time = addMinutesToTime(enriched.start_time, duration);
+    }
+  }
+  return enriched;
+}
+
 async function parseActionTwoStage(message, lessons, store, requiresAiReason) {
   const stage1 = parseQuickAction(message);
 
-  if (stage1 && isFastActionComplete(stage1) && !(requiresAiReason && stage1.action !== "query")) {
+  if (stage1 && stage1.action === "query") {
     return { action: stage1, reason: "", usedAi: false };
   }
 
-  const needsReasonOnly = Boolean(stage1 && requiresAiReason && stage1.action !== "query");
+  if (!requiresAiReason && stage1 && isFastActionComplete(stage1) && stage1.action !== "reschedule") {
+    return { action: enrichParsedAction(stage1, lessons), reason: "", usedAi: false };
+  }
+
   const apiKey = process.env.NVIDIA_NIM_API_KEY;
   if (!apiKey) {
     throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
   }
 
-  if (needsReasonOnly) {
-    try {
-      await reserveNimRequestSlot(store);
-      const reason = await inferReasonOnly(apiKey, message);
-      return { action: stage1 || { action: "unknown", reason: null }, reason, usedAi: true };
-    } catch (err) {
-      if (err.rateLimited) throw err;
-      return { action: stage1 || { action: "unknown", reason: null }, reason: "", usedAi: true };
-    }
+  const stage2 = await parseActionFromAi(message, lessons, store, true);
+  const resolvedAction = enrichParsedAction(stage2 || stage1 || { action: "unknown", reason: null }, lessons);
+  const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
+  const reason = inferredReason || inferReasonFromUserMessage(message);
+
+  if (resolvedAction) {
+    resolvedAction.reason = reason || null;
   }
 
-  const stage2 = await parseActionFromAi(message, lessons, store);
-  return { action: stage2, reason: normalizeReason(stage2 && stage2.reason), usedAi: true };
+  return {
+    action: resolvedAction,
+    reason: reason,
+    usedAi: true,
+  };
+}
+
+function normalizeModelJson(raw) {
+  return String(raw || "")
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+}
+
+function parseModelJson(raw) {
+  const cleaned = normalizeModelJson(raw);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function inferReasonFromRaw(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  if (text.length <= 12) return "";
+
+  const parsed = parseModelJson(text);
+  if (parsed && parsed.reason != null) return normalizeReason(parsed.reason);
+
+  const reasonMatch = text.match(/["']reason["']?\s*:\s*["']([\s\S]*?)["']/i);
+  if (reasonMatch && reasonMatch[1]) {
+    return normalizeReason(reasonMatch[1]);
+  }
+
+  const colonMatch = text.match(/\breason\s*[:：]\s*(.+)/i);
+  if (colonMatch && colonMatch[1]) {
+    return normalizeReason(colonMatch[1].replace(/[`"']/g, "").trim());
+  }
+
+  if (!/no reason|not provided|not specified|not stated|i cannot|i can't|unable to determine/i.test(text.toLowerCase())) {
+    return normalizeReason(text.replace(/[`\n\r]+/g, " ").trim());
+  }
+
+  return "";
+}
+
+function inferReasonFromUserMessage(userMessage) {
+  const text = String(userMessage || "").trim();
+  const match = text.match(/\b(?:because|so that|as|for)\s+(.+)$/i);
+  if (!match) return "";
+  const candidate = match[1].trim().replace(/[.\n\r]+$/g, "");
+  return normalizeReason(candidate);
 }
 
 async function callNim(apiKey, userMessage, lessons, options = {}) {
@@ -723,13 +822,11 @@ async function callNim(apiKey, userMessage, lessons, options = {}) {
   const data = await res.json();
   clearTimeout(timeoutId);
   const raw = data.choices?.[0]?.message?.content?.trim() || "{}";
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "");
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
+  const parsed = parseModelJson(raw);
+  if (!parsed) {
     throw new Error(`Model did not return valid JSON: ${raw}`);
   }
+  return parsed;
 }
 
 async function inferReasonOnly(apiKey, userMessage) {
@@ -751,8 +848,9 @@ async function inferReasonOnly(apiKey, userMessage) {
             role: "system",
             content:
               `You extract only the user's reason from a scheduling request.`
-              + ` Return JSON only: {"reason":"..."}`
-              + ` If no reason is present, use {"reason":null}.`,
+              + ` Return JSON only, and no markdown.`
+              + ` The schema is: {"reason":"..."}` 
+              + ` Use {"reason":null} when the request has no reason.`,
           },
           {
             role: "user",
@@ -779,18 +877,19 @@ async function inferReasonOnly(apiKey, userMessage) {
   }
   const data = await res.json();
   clearTimeout(timeoutId);
-  const raw = data?.choices?.[0]?.message?.content?.trim() || "{}";
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "");
-  try {
-    const parsed = JSON.parse(cleaned);
-    return normalizeReason(parsed?.reason);
-  } catch {
-    return "";
-  }
+  const raw = data?.choices?.[0]?.message?.content?.trim() || "";
+  const parsed = parseModelJson(raw);
+  const reasonFromModel = normalizeReason(parsed?.reason);
+  if (reasonFromModel) return reasonFromModel;
+  const fromRaw = inferReasonFromRaw(raw);
+  if (fromRaw) return fromRaw;
+  return inferReasonFromUserMessage(userMessage);
 }
 
-async function parseActionFromAi(message, lessons, store) {
-  await reserveNimRequestSlot(store);
+async function parseActionFromAi(message, lessons, store, reserveSlot = true) {
+  if (reserveSlot) {
+    await reserveNimRequestSlot(store);
+  }
 
   const apiKey = process.env.NVIDIA_NIM_API_KEY;
   if (!apiKey) {
