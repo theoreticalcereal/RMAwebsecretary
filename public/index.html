@@ -255,10 +255,11 @@
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-const ASSISTANT_REQUEST_TIMEOUT_MS = 12000;
+const ASSISTANT_REQUEST_TIMEOUT_MS = 20000;
 
 const state = {
   user: null,
+  calendarRefreshId: null,
 };
 
 function formatTime(hhmm) {
@@ -324,7 +325,16 @@ function setSessionView(showSignedIn, user) {
       appendMessage("system", `You are signed in as ${user.email}. You can now chat with the assistant.`);
       conversation.dataset.ready = "1";
     }
+    if (!state.calendarRefreshId) {
+      state.calendarRefreshId = setInterval(() => {
+        if (document.visibilityState === "visible") refresh();
+      }, 15000);
+    }
   } else {
+    if (state.calendarRefreshId) {
+      clearInterval(state.calendarRefreshId);
+      state.calendarRefreshId = null;
+    }
     authView.classList.remove("hidden");
     chatView.classList.add("hidden");
     document.getElementById("verify-form").classList.add("hidden");
@@ -575,7 +585,7 @@ assistantForm.addEventListener("submit", async (e) => {
     assistantRow.querySelector(".bubble").textContent = reply;
     if (isLimitReached) assistantRow.classList.add("error");
 
-    if (data.applied) {
+    if (data.applied || data.pending) {
       await refresh();
     }
   } catch (err) {
@@ -589,6 +599,8 @@ assistantForm.addEventListener("submit", async (e) => {
     if (timedOut) {
       setTimeout(fetchUsage, 1200);
       setTimeout(fetchUsage, 3500);
+      setTimeout(refresh, 1200);
+      setTimeout(refresh, 3600);
     }
   } finally {
     formSubmit.disabled = false;

@@ -56,11 +56,56 @@ function todayKey(userId) {
 
 async function readUsage(store, userId) {
   const data = await store.get(todayKey(userId), { type: "json" });
-  return data || { count: 0, maintainerNotified: false };
+  return {
+    count: data?.count ?? 0,
+    maintainerNotified: data?.maintainerNotified ?? false,
+    userEmail: data?.userEmail || null,
+  };
 }
 
 async function writeUsage(store, userId, usage) {
   await store.setJSON(todayKey(userId), usage);
+}
+
+const APPROVAL_SETTINGS_KEY = "approval_settings";
+const PENDING_CHANGES_KEY = "pending_changes";
+
+function getDefaultApprovalSettings() {
+  return {
+    mode: "manual",
+    auto: {
+      minHoursBefore: 24,
+      requireReason: true,
+      minReasonLength: 10,
+    },
+  };
+}
+
+async function readApprovalSettings(store) {
+  const data = await store.get(APPROVAL_SETTINGS_KEY, { type: "json" });
+  if (!data) return getDefaultApprovalSettings();
+
+  return {
+    mode: data.mode === "automatic" ? "automatic" : "manual",
+    auto: {
+      minHoursBefore: Math.max(0, Math.floor(Number(data?.auto?.minHoursBefore ?? 24))),
+      requireReason: typeof data?.auto?.requireReason === "boolean" ? data.auto.requireReason : true,
+      minReasonLength: Math.max(0, Math.floor(Number(data?.auto?.minReasonLength ?? 10))),
+    },
+  };
+}
+
+async function writeApprovalSettings(store, settings) {
+  await store.setJSON(APPROVAL_SETTINGS_KEY, settings);
+}
+
+async function readPendingChanges(store) {
+  const data = await store.get(PENDING_CHANGES_KEY, { type: "json" });
+  return Array.isArray(data) ? data : [];
+}
+
+async function writePendingChanges(store, pendingChanges) {
+  await store.setJSON(PENDING_CHANGES_KEY, pendingChanges);
 }
 
 // Lists every usage key for today, for the admin dashboard's "how many
@@ -74,6 +119,7 @@ async function listTodayUsage(store) {
     const data = await store.get(blob.key, { type: "json" });
     results.push({
       userId: blob.key.slice(prefix.length),
+      userEmail: data?.userEmail || null,
       count: data?.count ?? 0,
       maintainerNotified: data?.maintainerNotified ?? false,
     });
@@ -114,6 +160,10 @@ module.exports = {
   writeExceptions,
   readUsage,
   writeUsage,
+  readApprovalSettings,
+  writeApprovalSettings,
+  readPendingChanges,
+  writePendingChanges,
   listTodayUsage,
   jsonResponse,
   nextId,

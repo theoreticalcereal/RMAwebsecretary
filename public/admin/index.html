@@ -112,6 +112,39 @@
   .usage-table th { background: #f0f2f5; color: var(--muted); font-weight: 600; }
   .usage-table tr:last-child td { border-bottom: none; }
 
+  .pending-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 24px;
+    font-size: 0.82rem;
+  }
+  .pending-table th, .pending-table td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .pending-table th { background: #f0f2f5; color: var(--muted); font-size: 0.78rem; }
+  .pending-table tr:last-child td { border-bottom: none; }
+  .pending-actions button {
+    margin-right: 6px;
+    border: 1px solid var(--border);
+    background: #fff;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .pending-actions .danger {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .pending-hidden { display: none; }
+
   .section-heading {
     font-size: 1rem;
     margin: 24px 0 12px;
@@ -187,6 +220,56 @@
     color: white;
     border: none;
     border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .settings-form {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .settings-form .row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .settings-form label {
+    display: block;
+    font-size: 0.78rem;
+    margin-bottom: 4px;
+    color: var(--muted);
+  }
+  .settings-form input[type="number"],
+  .settings-form select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  .settings-form input[type="checkbox"] {
+    accent-color: var(--text);
+  }
+  .settings-form button {
+    padding: 9px 16px;
+    background: var(--text);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .section-heading .toggle-btn {
+    font-weight: normal;
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 999px;
+    padding: 4px 10px;
+    margin-left: 8px;
+    font-size: 0.78rem;
     cursor: pointer;
   }
 
@@ -266,6 +349,55 @@
       <tbody id="usage-tbody"></tbody>
     </table>
 
+    <h2 class="section-heading">Assistant approval settings</h2>
+    <div class="settings-form">
+      <form id="approval-settings-form" class="row">
+        <div>
+          <label for="approval-mode">Mode</label>
+          <select id="approval-mode">
+            <option value="manual">Manual (all AI changes require approval)</option>
+            <option value="automatic">Automatic (with rules)</option>
+          </select>
+        </div>
+        <div>
+          <label for="min-hours-before">No changes within X hours</label>
+          <input id="min-hours-before" type="number" min="0" step="1" value="24" />
+        </div>
+        <div>
+          <label for="require-reason">
+            <input id="require-reason" type="checkbox" checked />
+            Require reason for automatic approval
+          </label>
+        </div>
+        <div>
+          <label for="min-reason-length">Min reason length</label>
+          <input id="min-reason-length" type="number" min="0" step="1" value="10" />
+        </div>
+      </form>
+      <button id="save-approval-settings" type="button">Save settings</button>
+    </div>
+
+    <h2 class="section-heading">
+      <span>Pending assistant changes</span>
+      <button type="button" id="toggle-pending-btn" class="toggle-btn">Show pending list</button>
+    </h2>
+    <div id="pending-section" class="pending-hidden">
+      <table class="pending-table" id="pending-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Action</th>
+            <th>Who</th>
+            <th>Reason</th>
+            <th>Details</th>
+            <th>Decision</th>
+          </tr>
+        </thead>
+        <tbody id="pending-tbody"></tbody>
+      </table>
+      <div class="empty" id="pending-empty">No pending changes.</div>
+    </div>
+
     <h2 class="section-heading">Add a lesson</h2>
     <div class="add-form">
       <form id="manual-form">
@@ -297,6 +429,9 @@
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const state = {
   user: null,
+  pendingAutoRefresh: null,
+  pendingOpen: false,
+  pendingCount: 0,
 };
 
 function formatTime(hhmm) {
@@ -346,6 +481,12 @@ function setSessionView(authorized, user) {
     document.getElementById("code-input").value = "";
     document.getElementById("email-input").value = "";
     state.user = null;
+    state.pendingOpen = false;
+    state.pendingCount = 0;
+    if (state.pendingAutoRefresh) {
+      clearInterval(state.pendingAutoRefresh);
+      state.pendingAutoRefresh = null;
+    }
     return;
   }
 
@@ -353,7 +494,36 @@ function setSessionView(authorized, user) {
   document.getElementById("admin-user").textContent = user.email;
   loginView.classList.add("hidden");
   dashboardView.classList.remove("hidden");
+  if (!state.pendingAutoRefresh) {
+    state.pendingAutoRefresh = setInterval(() => {
+      if (document.visibilityState === "visible") refreshAll();
+    }, 15000);
+  }
   refreshAll();
+}
+
+function formatActionType(action) {
+  if (!action) return "";
+  if (action.action === "add") return "Add";
+  if (action.action === "cancel") return "Cancel occurrence";
+  if (action.action === "delete") return "Delete recurring";
+  return action.action;
+}
+
+function formatChangeDetails(action) {
+  if (!action) return "";
+  if (action.action === "add") {
+    const label = action.recurring === false ? "one-off" : "recurring";
+    const when = action.specific_date ? `${action.specific_date} ` : `${DAY_NAMES[action.day_of_week] || ""} `;
+    return `${label} ${when}${action.start_time}-${action.end_time} - ${escapeHtml(action.subject || "")} ${escapeHtml(action.student || "")}`;
+  }
+  if (action.action === "delete") {
+    return `lesson #${action.lesson_id}`;
+  }
+  if (action.action === "cancel") {
+    return `lesson #${action.lesson_id} on ${action.specific_date || "N/A"}`;
+  }
+  return "";
 }
 
 async function adminFetch(url, options = {}) {
@@ -482,104 +652,178 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   }
 });
 
-// Stats
-async function refreshStats() {
+function updatePendingToggleUI() {
+  const btn = document.getElementById("toggle-pending-btn");
+  if (!btn) return;
+  const countText = state.pendingCount ? ` (${state.pendingCount})` : " (0)";
+  btn.textContent = `${state.pendingOpen ? "Hide" : "Show"} pending list${countText}`;
+}
+
+async function performReviewChange(id, decision) {
+  const note = decision === "reject" ? prompt("Add a short note (optional):", "") || "" : undefined;
+  await adminFetch("/api/admin-lessons", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      operation: decision === "approve" ? "approve_change" : "reject_change",
+      id,
+      note: note || "Reviewed by admin",
+    }),
+  });
+  refreshAll();
+}
+
+async function renderApprovalSection(data) {
+  const settings = data.approvalSettings || {};
+  document.getElementById("approval-mode").value = settings.mode || "manual";
+  document.getElementById("min-hours-before").value = Number(settings.auto?.minHoursBefore ?? 24);
+  document.getElementById("require-reason").checked = settings.auto?.requireReason !== false;
+  document.getElementById("min-reason-length").value = Number(settings.auto?.minReasonLength ?? 10);
+}
+
+function renderPendingRows(pendingChanges) {
+  const tbody = document.getElementById("pending-tbody");
+  const section = document.getElementById("pending-section");
+  const empty = document.getElementById("pending-empty");
+  const toggleBtn = document.getElementById("toggle-pending-btn");
+
+  state.pendingCount = pendingChanges?.length || 0;
+  tbody.innerHTML = "";
+
+  if (!pendingChanges || pendingChanges.length === 0) {
+    section.style.display = "none";
+    empty.style.display = "block";
+    toggleBtn.textContent = `Show pending list (0)`;
+    return;
+  }
+
+  toggleBtn.textContent = `${state.pendingOpen ? "Hide" : "Show"} pending list (${pendingChanges.length})`;
+
+  section.style.display = state.pendingOpen ? "block" : "none";
+  empty.style.display = state.pendingOpen ? "none" : "block";
+
+  pendingChanges.forEach((change) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${escapeHtml((change.createdAt || "").replace("T", " ").slice(0, 16))}</td>
+      <td>${escapeHtml(formatActionType(change.action))}</td>
+      <td>${escapeHtml(change.requestedByEmail || change.requestedBy || "user")}</td>
+      <td>${escapeHtml(change.autoCheck?.requiredReason || "—")}</td>
+      <td>${escapeHtml(formatChangeDetails(change.action))}</td>
+      <td class="pending-actions">
+        <button data-id="${change.id}" data-decision="approve">Approve</button>
+        <button class="danger" data-id="${change.id}" data-decision="reject">Reject</button>
+      </td>
+    `;
+    tbody.appendChild(row);
+  });
+
+  tbody.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      const decision = e.currentTarget.dataset.decision;
+      const id = Number(e.currentTarget.dataset.id);
+      try {
+        await performReviewChange(id, decision);
+      } catch (err) {
+        showError(`Couldn't ${decision} change #${id}: ${err.message}`);
+      }
+    });
+  });
+}
+
+function renderCalendarData(data) {
+  const cal = document.getElementById("calendar");
+  cal.innerHTML = "";
+
+  const byDay = {};
+  for (let i = 0; i < 7; i++) byDay[i] = [];
+  (data.lessons || [])
+    .filter((l) => l.active !== false)
+    .forEach((l) => byDay[l.day_of_week].push(l));
+  for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+  DAY_NAMES.forEach((name, idx) => {
+    const col = document.createElement("div");
+    col.className = "day-col";
+    const heading = document.createElement("h3");
+    heading.textContent = name;
+    col.appendChild(heading);
+
+    const lessons = byDay[idx];
+    if (lessons.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No lessons";
+      col.appendChild(empty);
+    } else {
+      lessons.forEach((l) => {
+        const card = document.createElement("div");
+        card.className = "lesson-card";
+        card.innerHTML = `
+          <button class="del-btn" title="Delete" data-id="${l.id}">✕</button>
+          <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
+          <span class="student">${escapeHtml(l.student)}</span>
+          ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
+        `;
+        col.appendChild(card);
+      });
+    }
+    cal.appendChild(col);
+  });
+
+  cal.querySelectorAll(".del-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.id);
+      if (!confirm("Delete this lesson?")) return;
+      try {
+        await adminFetch("/api/admin-lessons", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        refreshAll();
+      } catch (err) {
+        showError(`Couldn't delete lesson: ${err.message}`);
+      }
+    });
+  });
+}
+
+async function refreshAll() {
   try {
-    const data = await adminFetch("/api/admin-stats");
+    const [usageData, adminData] = await Promise.all([adminFetch("/api/admin-stats"), adminFetch("/api/admin-lessons")]);
+    clearError();
+
     const statsRow = document.getElementById("stats-row");
     statsRow.innerHTML = `
-      <div class="stat-card"><div class="value">${data.totalVisitorsToday}</div><div class="label">Users today</div></div>
-      <div class="stat-card"><div class="value">${data.totalPromptsToday}</div><div class="label">Total prompts today</div></div>
-      <div class="stat-card"><div class="value">${data.visitorsAtLimit}</div><div class="label">Users at daily limit</div></div>
+      <div class="stat-card"><div class="value">${usageData.totalVisitorsToday}</div><div class="label">Users today</div></div>
+      <div class="stat-card"><div class="value">${usageData.totalPromptsToday}</div><div class="label">Total prompts today</div></div>
+      <div class="stat-card"><div class="value">${usageData.visitorsAtLimit}</div><div class="label">Users at daily limit</div></div>
     `;
 
-    const tbody = document.getElementById("usage-tbody");
-    tbody.innerHTML = "";
-    if (data.usage.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="3" class="empty">No assistant activity yet today</td></tr>`;
+    const usageRows = document.getElementById("usage-tbody");
+    usageRows.innerHTML = "";
+    if (!usageData.usage || usageData.usage.length === 0) {
+      usageRows.innerHTML = `<tr><td colspan="3" class="empty">No assistant activity yet today</td></tr>`;
     } else {
-      data.usage.forEach((u) => {
+      usageData.usage.forEach((u) => {
         const row = document.createElement("tr");
         row.innerHTML = `
-          <td>${escapeHtml((u.userId || u.visitorId || "").slice(0, 8))}…</td>
+          <td>${escapeHtml(u.userEmail || u.userId || u.visitorId || "unknown")}</td>
           <td>${u.count} / 5</td>
           <td>${u.maintainerNotified ? "Yes" : "No"}</td>
         `;
-        tbody.appendChild(row);
+        usageRows.appendChild(row);
       });
     }
+
+    renderCalendarData(adminData);
+    renderApprovalSection(adminData);
+    renderPendingRows(adminData.pendingChanges || []);
+    updatePendingToggleUI();
   } catch (err) {
-    showError(`Couldn't load usage stats: ${err.message}`);
+    showError(`Couldn't refresh dashboard: ${err.message}`);
   }
-}
-
-// Calendar (admin view, with delete buttons)
-async function refreshCalendar() {
-  try {
-    const data = await adminFetch("/api/admin-lessons");
-    clearError();
-
-    const cal = document.getElementById("calendar");
-    cal.innerHTML = "";
-
-    const byDay = {};
-    for (let i = 0; i < 7; i++) byDay[i] = [];
-    data.lessons.filter((l) => l.active !== false).forEach((l) => byDay[l.day_of_week].push(l));
-    for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.start_time.localeCompare(b.start_time));
-
-    DAY_NAMES.forEach((name, idx) => {
-      const col = document.createElement("div");
-      col.className = "day-col";
-      const heading = document.createElement("h3");
-      heading.textContent = name;
-      col.appendChild(heading);
-
-      const lessons = byDay[idx];
-      if (lessons.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "No lessons";
-        col.appendChild(empty);
-      } else {
-        lessons.forEach((l) => {
-          const card = document.createElement("div");
-          card.className = "lesson-card";
-          card.innerHTML = `
-            <button class="del-btn" title="Delete" data-id="${l.id}">✕</button>
-            <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
-            <span class="student">${escapeHtml(l.student)}</span>
-            ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
-          `;
-          col.appendChild(card);
-        });
-      }
-      cal.appendChild(col);
-    });
-
-    cal.querySelectorAll(".del-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const id = Number(btn.dataset.id);
-        if (!confirm("Delete this lesson?")) return;
-        try {
-          await adminFetch("/api/admin-lessons", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id }),
-          });
-          refreshAll();
-        } catch (err) {
-          showError(`Couldn't delete lesson: ${err.message}`);
-        }
-      });
-    });
-  } catch (err) {
-    showError(`Couldn't load lessons: ${err.message}`);
-  }
-}
-
-function refreshAll() {
-  refreshStats();
-  refreshCalendar();
 }
 
 // Manual add form
@@ -604,6 +848,40 @@ document.getElementById("manual-form").addEventListener("submit", async (e) => {
   } catch (err) {
     showError(`Couldn't add lesson: ${err.message}`);
   }
+});
+
+document.getElementById("save-approval-settings").addEventListener("click", async () => {
+  const body = {
+    operation: "save_settings",
+    settings: {
+      mode: document.getElementById("approval-mode").value,
+      auto: {
+        minHoursBefore: Number(document.getElementById("min-hours-before").value || 0),
+        requireReason: document.getElementById("require-reason").checked,
+        minReasonLength: Number(document.getElementById("min-reason-length").value || 0),
+      },
+    },
+  };
+  try {
+    await adminFetch("/api/admin-lessons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    refreshAll();
+  } catch (err) {
+    showError(`Couldn't save approval settings: ${err.message}`);
+  }
+});
+
+document.getElementById("toggle-pending-btn").addEventListener("click", () => {
+  state.pendingOpen = !state.pendingOpen;
+  const pendingSection = document.getElementById("pending-section");
+  const pendingEmpty = document.getElementById("pending-empty");
+  pendingSection.style.display = state.pendingOpen ? "block" : "none";
+  pendingEmpty.style.display = state.pendingOpen ? "none" : "block";
+  updatePendingToggleUI();
+  if (state.pendingOpen) refreshAll();
 });
 
 refreshSession();

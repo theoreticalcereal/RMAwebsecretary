@@ -17,6 +17,9 @@ const {
   writeLessons,
   readExceptions,
   writeExceptions,
+  readApprovalSettings,
+  readPendingChanges,
+  writePendingChanges,
   readUsage,
   writeUsage,
   jsonResponse,
@@ -70,6 +73,238 @@ Rules:
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.`;
 
+function nowInMs() {
+  return Date.now();
+}
+
+function cloneAction(action) {
+  return JSON.parse(JSON.stringify(action));
+}
+
+function parseDateAndTime(specificDate, startTime) {
+  if (!specificDate || !startTime) return null;
+  const dt = new Date(`${specificDate}T${startTime}:00`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function nextOccurenceOnOrAfter(date, dayIndex, timeHHMM) {
+  const [hour, minute] = timeHHMM.split(":").map(Number);
+  if ([dayIndex, hour, minute].some((v) => Number.isNaN(v))) return null;
+  const now = date ? new Date(date) : new Date();
+
+  const candidate = new Date(now);
+  candidate.setHours(hour, minute, 0, 0);
+  const currentDay = candidate.getDay();
+  const targetDay = (dayIndex + 1) % 7;
+  const delta = (targetDay - currentDay + 7) % 7;
+  candidate.setDate(candidate.getDate() + delta);
+
+  if (candidate.getTime() <= now.getTime()) {
+    candidate.setDate(candidate.getDate() + 7);
+  }
+  return candidate;
+}
+
+function extractReasonFromMessage(message) {
+  const raw = String(message || "").trim();
+  const match = raw.match(/\b(?:because|reason|reasoning)\b\s*:\s*(.+)$/i)
+    || raw.match(/\b(?:because|since|due to|as a result of)\b\s+(.+)$/i);
+  if (!match) return "";
+  return match[1].trim();
+}
+
+function findPotentialConflict(lessons, action) {
+  return lessons.find(
+    (l) =>
+      l.active !== false &&
+      l.day_of_week === action.day_of_week &&
+      timesOverlap(l.start_time, l.end_time, action.start_time, action.end_time)
+  );
+}
+
+function meetsReasonRules(rawReason, settings) {
+  if (!settings.auto.requireReason) return { ok: true, reason: rawReason };
+  const reason = (rawReason || "").trim();
+  if (!reason) return { ok: false, issue: "A valid reason is required before auto-approving." };
+  if (reason.length < settings.auto.minReasonLength) {
+    return {
+      ok: false,
+      issue: `The reason must be at least ${settings.auto.minReasonLength} characters long before auto-approving.`,
+    };
+  }
+  return { ok: true, reason };
+}
+
+function minutesUntil(targetDate, now = nowInMs()) {
+  if (!targetDate) return Number.POSITIVE_INFINITY;
+  return (new Date(targetDate).getTime() - now) / (60 * 60 * 1000);
+}
+
+function canAutoApprove(changeAction, pendingRequestMessage, settings, lessons) {
+  if (settings.mode !== "automatic") return { ok: false, autoRejected: false, reason: "manual_mode" };
+
+  const auto = settings.auto || {};
+  const minHoursBefore = Number(auto.minHoursBefore ?? 24);
+  const reasonCheck = meetsReasonRules(extractReasonFromMessage(pendingRequestMessage), settings);
+  if (!reasonCheck.ok) {
+    return { ok: false, autoRejected: true, reason: reasonCheck.issue, requiredAction: "manual_review" };
+  }
+
+  if (changeAction.action === "add") {
+    const nextOccurrence = nextOccurenceOnOrAfter(new Date(), changeAction.day_of_week, changeAction.start_time);
+    if (minutesUntil(nextOccurrence) < minHoursBefore) {
+      return {
+        ok: false,
+        autoRejected: true,
+        reason: `This lesson starts in less than ${minHoursBefore} hour(s).`,
+        requiredAction: "manual_review",
+      };
+    }
+    return { ok: true, autoRejected: false };
+  }
+
+  if (changeAction.action === "delete") {
+    const lesson = lessons.find((l) => l.id === changeAction.lesson_id);
+    if (!lesson) return { ok: false, autoRejected: true, reason: "Unknown lesson id.", requiredAction: "manual_review" };
+    const nextOccurrence = nextOccurenceOnOrAfter(new Date(), lesson.day_of_week, lesson.start_time);
+    if (minutesUntil(nextOccurrence) < minHoursBefore) {
+      return {
+        ok: false,
+        autoRejected: true,
+        reason: `That recurring lesson starts in less than ${minHoursBefore} hour(s).`,
+        requiredAction: "manual_review",
+      };
+    }
+    return { ok: true, autoRejected: false };
+  }
+
+  if (changeAction.action === "cancel") {
+    const lesson = lessons.find((l) => l.id === changeAction.lesson_id);
+    if (!lesson) return { ok: false, autoRejected: true, reason: "Unknown lesson id.", requiredAction: "manual_review" };
+
+    const cancelDate = parseDateAndTime(changeAction.specific_date, lesson.start_time);
+    if (!cancelDate) {
+      return { ok: false, autoRejected: true, reason: "Specific date is missing or invalid.", requiredAction: "manual_review" };
+    }
+    if (minutesUntil(cancelDate) < minHoursBefore) {
+      return {
+        ok: false,
+        autoRejected: true,
+        reason: `That occurrence starts in less than ${minHoursBefore} hour(s).`,
+        requiredAction: "manual_review",
+      };
+    }
+    return { ok: true, autoRejected: false };
+  }
+
+  return { ok: true, autoRejected: false };
+}
+
+async function queuePendingChange(store, action, reason, userId, userMessage, userEmail) {
+  const pendingChanges = await readPendingChanges(store);
+  const pending = {
+    id: nextId(pendingChanges),
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    requestedBy: userId,
+    requestedByEmail: userEmail || userId,
+    requestMessage: userMessage,
+    autoCheck: {
+      requiredReason: reason,
+    },
+    action: cloneAction(action),
+  };
+  pendingChanges.push(pending);
+  await writePendingChanges(store, pendingChanges);
+  return pending;
+}
+
+function createAutoRejectResponse(action, reason, pending) {
+  return {
+    action: {
+      ...cloneAction(action),
+      reply: reason,
+      action: action.action,
+    },
+    applied: false,
+    pending: true,
+    pendingChange: pending,
+  };
+}
+
+async function applyActionOrQueue(store, action, userMessage, userId, lessons, settings, reasonText, userEmail) {
+  if (settings.mode === "manual") {
+    const pending = await queuePendingChange(store, action, reasonText, userId, userMessage, userEmail);
+    return createAutoRejectResponse(action, "This request has been queued for manual review.", pending);
+  }
+
+  const autoDecision = canAutoApprove(action, userMessage, settings, lessons);
+  if (!autoDecision.ok) {
+    const pending = await queuePendingChange(store, action, reasonText, userId, userMessage, userEmail);
+    return createAutoRejectResponse(
+      action,
+      autoDecision.reason || "This request has been queued for manual review.",
+      pending
+    );
+  }
+
+  if (action.action === "add") {
+    const conflict = findPotentialConflict(lessons, action);
+    if (conflict) {
+      return {
+        action: {
+          ...cloneAction(action),
+          action: "unknown",
+          reply: `That conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
+        },
+        applied: false,
+      };
+    }
+
+    const lesson = {
+      id: nextId(lessons),
+      student: action.student || "Unnamed",
+      subject: action.subject || "",
+      day_of_week: action.day_of_week,
+      start_time: action.start_time,
+      end_time: action.end_time,
+      recurring: action.recurring !== false,
+      specific_date: action.specific_date || null,
+      active: true,
+    };
+    lessons.push(lesson);
+    await writeLessons(store, lessons);
+    return { action, applied: true, lesson };
+  }
+
+  if (action.action === "delete") {
+    const filtered = lessons.filter((l) => l.id !== action.lesson_id);
+    if (filtered.length === lessons.length) {
+      return {
+        action: { ...cloneAction(action), action: "unknown", reply: "I couldn't find that lesson." },
+        applied: false,
+      };
+    }
+    await writeLessons(store, filtered);
+    return { action, applied: true, deleted: action.lesson_id };
+  }
+
+  if (action.action === "cancel") {
+    const exceptions = await readExceptions(store);
+    const exception = {
+      id: nextId(exceptions),
+      lesson_id: action.lesson_id,
+      exception_date: action.specific_date,
+      status: "cancelled",
+    };
+    exceptions.push(exception);
+    await writeExceptions(store, exceptions);
+    return { action, applied: true, exception };
+  }
+
+  return { action, applied: false };
+}
+
 function parseTo24Hour(hour, minute, meridian) {
   const h = Number(hour);
   const m = Number(minute || 0);
@@ -105,8 +340,10 @@ function parseSimpleAddRequest(message) {
   );
   if (!timeMatch) return null;
 
-  const startPeriod = timeMatch[3];
-  const endPeriod = timeMatch[6] || startPeriod;
+  const explicitStartPeriod = timeMatch[3];
+  const explicitEndPeriod = timeMatch[6];
+  const startPeriod = explicitStartPeriod || explicitEndPeriod;
+  const endPeriod = explicitEndPeriod || explicitStartPeriod || startPeriod;
   const startTime = parseTo24Hour(timeMatch[1], timeMatch[2], startPeriod);
   const endTime = parseTo24Hour(timeMatch[4], timeMatch[5], endPeriod);
   if (!startTime || !endTime) return null;
@@ -194,12 +431,12 @@ exports.handler = async (event) => {
     return jsonResponse(401, { error: "unauthorized", detail: "Please log in with email to use the assistant." });
   }
 
-  const userId = user.id || user.email;
-  const response = await innerHandler(event, userId);
-  return response;
+  return innerHandler(event, user);
 };
 
-async function innerHandler(event, userId) {
+async function innerHandler(event, user) {
+  const userId = user.id || user.email;
+  const userEmail = user.email;
   // GET: report today's usage without consuming a prompt. Lets the
   // frontend show "N of 5 left" and disable the input on load.
   if (event.httpMethod === "GET") {
@@ -233,7 +470,11 @@ async function innerHandler(event, userId) {
 
   try {
     const store = getLessonStore(event);
-    const [usage, lessons] = await Promise.all([readUsage(store, userId), readLessons(store)]);
+    const [usage, lessons, approvalSettings] = await Promise.all([
+      readUsage(store, userId),
+      readLessons(store),
+      readApprovalSettings(store),
+    ]);
 
     if (usage.count >= DAILY_PROMPT_LIMIT) {
       // Only email the maintainer once per user per day, the first time
@@ -243,7 +484,11 @@ async function innerHandler(event, userId) {
           promptCount: usage.count,
           date: new Date().toISOString().slice(0, 10),
         });
-        await writeUsage(store, userId, { ...usage, maintainerNotified: true });
+        await writeUsage(store, userId, {
+          ...usage,
+          userEmail,
+          maintainerNotified: true,
+        });
       }
 
       return jsonResponse(200, {
@@ -256,7 +501,7 @@ async function innerHandler(event, userId) {
       });
     }
 
-    const nextUsage = { ...usage, count: usage.count + 1 };
+    const nextUsage = { ...usage, userEmail, count: usage.count + 1 };
     const fastAction = parseSimpleAddRequest(body.message);
     if (fastAction) {
       await writeUsage(store, userId, nextUsage);
@@ -268,37 +513,18 @@ async function innerHandler(event, userId) {
         });
       }
 
-      const conflict = lessons.find(
-        (l) =>
-          l.active !== false &&
-          l.day_of_week === action.day_of_week &&
-          timesOverlap(l.start_time, l.end_time, action.start_time, action.end_time)
+      const reason = extractReasonFromMessage(body.message);
+      const result = await applyActionOrQueue(
+        store,
+        action,
+        body.message,
+        userId,
+        lessons,
+        approvalSettings,
+        reason,
+        userEmail
       );
-      if (conflict) {
-        return jsonResponse(200, {
-          action: {
-            ...action,
-            action: "unknown",
-            reply: `That conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
-          },
-          applied: false,
-        });
-      }
-
-      const lesson = {
-        id: nextId(lessons),
-        student: action.student || "Unnamed",
-        subject: action.subject || "",
-        day_of_week: action.day_of_week,
-        start_time: action.start_time,
-        end_time: action.end_time,
-        recurring: action.recurring !== false,
-        specific_date: action.specific_date || null,
-        active: true,
-      };
-      lessons.push(lesson);
-      await writeLessons(store, lessons);
-      return jsonResponse(201, { action, applied: true, lesson });
+      return jsonResponse(result.applied ? 201 : 200, result);
     }
 
     const apiKey = process.env.NVIDIA_NIM_API_KEY;
@@ -320,37 +546,18 @@ async function innerHandler(event, userId) {
         });
       }
 
-      const conflict = lessons.find(
-        (l) =>
-          l.active !== false &&
-          l.day_of_week === action.day_of_week &&
-          timesOverlap(l.start_time, l.end_time, action.start_time, action.end_time)
+      const reason = extractReasonFromMessage(body.message);
+      const result = await applyActionOrQueue(
+        store,
+        action,
+        body.message,
+        userId,
+        lessons,
+        approvalSettings,
+        reason,
+        userEmail
       );
-      if (conflict) {
-        return jsonResponse(200, {
-          action: {
-            ...action,
-            action: "unknown",
-            reply: `That conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
-          },
-          applied: false,
-        });
-      }
-
-      const lesson = {
-        id: nextId(lessons),
-        student: action.student || "Unnamed",
-        subject: action.subject || "",
-        day_of_week: action.day_of_week,
-        start_time: action.start_time,
-        end_time: action.end_time,
-        recurring: action.recurring !== false,
-        specific_date: action.specific_date || null,
-        active: true,
-      };
-      lessons.push(lesson);
-      await writeLessons(store, lessons);
-      return jsonResponse(201, { action, applied: true, lesson });
+      return jsonResponse(result.applied ? 201 : 200, result);
     }
 
     if (action.action === "delete") {
@@ -360,15 +567,19 @@ async function innerHandler(event, userId) {
           applied: false,
         });
       }
-      const filtered = lessons.filter((l) => l.id !== action.lesson_id);
-      if (filtered.length === lessons.length) {
-        return jsonResponse(200, {
-          action: { ...action, action: "unknown", reply: "I couldn't find that lesson." },
-          applied: false,
-        });
-      }
-      await writeLessons(store, filtered);
-      return jsonResponse(200, { action, applied: true, deleted: action.lesson_id });
+
+      const reason = extractReasonFromMessage(body.message);
+      const result = await applyActionOrQueue(
+        store,
+        action,
+        body.message,
+        userId,
+        lessons,
+        approvalSettings,
+        reason,
+        userEmail
+      );
+      return jsonResponse(result.applied ? 200 : 200, result);
     }
 
     if (action.action === "cancel") {
@@ -378,16 +589,18 @@ async function innerHandler(event, userId) {
           applied: false,
         });
       }
-      const exceptions = await readExceptions(store);
-      const exception = {
-        id: nextId(exceptions),
-        lesson_id: action.lesson_id,
-        exception_date: action.specific_date,
-        status: "cancelled",
-      };
-      exceptions.push(exception);
-      await writeExceptions(store, exceptions);
-      return jsonResponse(201, { action, applied: true, exception });
+      const reason = extractReasonFromMessage(body.message);
+      const result = await applyActionOrQueue(
+        store,
+        action,
+        body.message,
+        userId,
+        lessons,
+        approvalSettings,
+        reason,
+        userEmail
+      );
+      return jsonResponse(result.applied ? 201 : 200, result);
     }
 
     return jsonResponse(200, { action, applied: false });
