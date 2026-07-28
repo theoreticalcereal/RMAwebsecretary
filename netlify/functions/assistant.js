@@ -54,6 +54,7 @@ The JSON must have this shape:
   "recurring": true or false,
   "specific_date": "YYYY-MM-DD" or null,
   "lesson_id": integer or null,
+  "reason": string or null,
   "reply": string (a short, plain confirmation or clarifying question to show the user)
 }
 
@@ -64,7 +65,8 @@ Rules:
 - "reschedule" means adjust an existing lesson's times. Use lesson_id if possible, otherwise include subject/student.
 - "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful answer using the CURRENT LESSONS provided below, action "query".
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
-- Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.`;
+- Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.
+- Include a "reason" value only when the user explicitly provides a reason for a change request. Use null otherwise.`;
 
 function nowInMs() {
   return Date.now();
@@ -110,13 +112,10 @@ function nextOccurrenceOnOrAfter(date, dayIndex, timeHHMM) {
   return candidate;
 }
 
-function extractReasonFromMessage(message) {
-  const raw = String(message || "").trim();
-  const match =
-    raw.match(/\b(?:because|reason|reasoning)\b\s*:\s*(.+)$/i) ||
-    raw.match(/\b(?:because|since|due to|as a result of)\b\s+(.+)$/i);
-  if (!match) return "";
-  return match[1].trim();
+function normalizeReason(reason) {
+  const normalized = String(reason || "").trim();
+  if (!normalized) return "";
+  return normalized.length > 2048 ? normalized.slice(0, 2048) : normalized;
 }
 
 function findPotentialConflict(lessons, action, excludeLessonId) {
@@ -173,12 +172,12 @@ function isLikelyQuery(message) {
   return /\b(what|when|who|schedule|calendar|lessons|lesson|show|list)\b/.test(lower);
 }
 
-function canAutoApprove(changeAction, pendingRequestMessage, settings, lessons) {
+function canAutoApprove(changeAction, reasonText, settings, lessons) {
   if (settings.mode !== "automatic") return { ok: false, autoRejected: false, reason: "manual_mode" };
 
   const auto = settings.auto || {};
   const minHoursBefore = Number(auto.minHoursBefore ?? 24);
-  const reasonCheck = meetsReasonRules(extractReasonFromMessage(pendingRequestMessage), settings);
+  const reasonCheck = meetsReasonRules(normalizeReason(reasonText), settings);
   if (!reasonCheck.ok) {
     return { ok: false, autoRejected: true, reason: reasonCheck.issue, requiredAction: "manual_review" };
   }
@@ -337,7 +336,7 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
     return createAutoRejectResponse(action, "This request has been queued for manual review.", pending);
   }
 
-  const autoDecision = canAutoApprove(action, userMessage, settings, lessons);
+  const autoDecision = canAutoApprove(action, reasonText, settings, lessons);
   if (!autoDecision.ok) {
     const pending = await queuePendingChange(store, action, reasonText, userId, userMessage, userEmail);
     return createAutoRejectResponse(
@@ -783,7 +782,11 @@ async function innerHandler(event, user) {
     const fastAdd = parseSimpleAddRequest(body.message);
     const fastReschedule = parseSimpleRescheduleRequest(body.message);
     const fastCancel = parseQuickCancelRequest(body.message);
-    const fastAction = fastAdd || fastCancel || fastReschedule || quickQuery;
+    const skipFastPath =
+      approvalSettings.mode === "automatic" &&
+      approvalSettings.auto &&
+      approvalSettings.auto.requireReason === true;
+    const fastAction = skipFastPath ? null : fastAdd || fastCancel || fastReschedule || quickQuery;
 
     if (fastAction) {
       await writeUsage(store, userId, nextUsage);
@@ -813,7 +816,7 @@ async function innerHandler(event, user) {
         });
       }
 
-      const reason = extractReasonFromMessage(body.message);
+      const reason = "";
       const result = await applyActionOrQueue(
         store,
         fastAction,
@@ -829,9 +832,11 @@ async function innerHandler(event, user) {
 
     await writeUsage(store, userId, nextUsage);
     let action;
+    let inferredReason = "";
     try {
       const result = await parseActionFromAi(body.message, lessons, store);
       action = result;
+      inferredReason = normalizeReason(result && result.reason);
     } catch (err) {
       if (err.rateLimited) {
         return jsonResponse(429, {
@@ -864,7 +869,7 @@ async function innerHandler(event, user) {
           used: nextUsage.count,
         });
       }
-      const reason = extractReasonFromMessage(body.message);
+      const reason = inferredReason;
       const result = await applyActionOrQueue(
         store,
         action,
@@ -887,7 +892,7 @@ async function innerHandler(event, user) {
           used: nextUsage.count,
         });
       }
-      const reason = extractReasonFromMessage(body.message);
+      const reason = inferredReason;
       const result = await applyActionOrQueue(
         store,
         action,
@@ -910,7 +915,7 @@ async function innerHandler(event, user) {
           used: nextUsage.count,
         });
       }
-      const reason = extractReasonFromMessage(body.message);
+      const reason = inferredReason;
       const result = await applyActionOrQueue(
         store,
         action,
@@ -943,7 +948,7 @@ async function innerHandler(event, user) {
         });
       }
 
-      const reason = extractReasonFromMessage(body.message);
+      const reason = inferredReason;
       const result = await applyActionOrQueue(
         store,
         action,
