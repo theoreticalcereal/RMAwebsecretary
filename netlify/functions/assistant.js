@@ -1,15 +1,3 @@
-// Public natural-language assistant, powered by NVIDIA NIM. This is the
-// ONLY way public users can create, cancel, or delete lessons - there is
-// no manual add form on the public page anymore. The maintainer can still
-// manage lessons directly through the admin dashboard.
-//
-// Adds a daily cap of 5 prompts PER authenticated user, tracked server-side
-// in Blobs. This prevents unbounded usage and gives a clear identity basis
-// for usage reporting. Also sends a one-time-per-user maintainer email via
-// Resend when that user's cap is first exceeded.
-//
-// GET  /api/assistant  -> today's usage status for this user, without consuming a prompt
-// POST /api/assistant  { "message": "..." } -> parse + apply via NIM
 
 const {
   getLessonStore,
@@ -20,6 +8,7 @@ const {
   readApprovalSettings,
   readPendingChanges,
   writePendingChanges,
+  recordUserIdentity,
   readUsage,
   writeUsage,
   jsonResponse,
@@ -30,10 +19,8 @@ const { notifyMaintainer } = require("./_notify");
 const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-// Any NIM chat model works here; this one is small/fast and free-tier friendly.
 const NIM_MODEL = "meta/llama-3.1-70b-instruct";
 
-// Daily cap on assistant prompts per user, to prevent runaway NIM API usage.
 const DAILY_PROMPT_LIMIT = 5;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -207,7 +194,7 @@ async function queuePendingChange(store, action, reason, userId, userMessage, us
     status: "pending",
     createdAt: new Date().toISOString(),
     requestedBy: userId,
-    requestedByEmail: userEmail || userId,
+    requestedByEmail: userEmail || null,
     requestMessage: userMessage,
     autoCheck: {
       requiredReason: reason,
@@ -405,7 +392,6 @@ async function callNim(apiKey, userMessage, lessons) {
       }),
     });
   } catch (networkErr) {
-    // Network-level failure reaching NIM (DNS, timeout, connection refused).
     throw new Error(`Could not reach NIM API: ${networkErr.message || networkErr}`);
   }
 
@@ -437,11 +423,10 @@ exports.handler = async (event) => {
 async function innerHandler(event, user) {
   const userId = user.id || user.email;
   const userEmail = user.email;
-  // GET: report today's usage without consuming a prompt. Lets the
-  // frontend show "N of 5 left" and disable the input on load.
   if (event.httpMethod === "GET") {
     try {
       const store = getLessonStore(event);
+      await recordUserIdentity(store, userId, userEmail);
       const usage = await readUsage(store, userId);
       return jsonResponse(200, {
         limit: DAILY_PROMPT_LIMIT,
@@ -470,6 +455,8 @@ async function innerHandler(event, user) {
 
   try {
     const store = getLessonStore(event);
+    await recordUserIdentity(store, userId, userEmail);
+
     const [usage, lessons, approvalSettings] = await Promise.all([
       readUsage(store, userId),
       readLessons(store),
@@ -477,8 +464,6 @@ async function innerHandler(event, user) {
     ]);
 
     if (usage.count >= DAILY_PROMPT_LIMIT) {
-      // Only email the maintainer once per user per day, the first time
-      // that user's cap is exceeded, not on every subsequent blocked request.
       if (!usage.maintainerNotified) {
         await notifyMaintainer({
           promptCount: usage.count,
@@ -533,7 +518,6 @@ async function innerHandler(event, user) {
     await writeUsage(store, userId, nextUsage);
     const action = await callNim(apiKey, body.message, lessons);
 
-    // Query / unknown: nothing to apply, just return the model's reply.
     if (action.action === "query" || action.action === "unknown" || !action.action) {
       return jsonResponse(200, { action, applied: false });
     }

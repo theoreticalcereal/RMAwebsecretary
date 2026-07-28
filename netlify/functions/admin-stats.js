@@ -1,7 +1,3 @@
-// Admin-only. Reports today's assistant usage across authenticated users for
-// the same authenticated identity model used on public pages.
-//
-// GET /api/admin-stats -> today's usage breakdown
 
 const { getLessonStore, listTodayUsage, jsonResponse } = require("./_store");
 const { getAdminSession } = require("./_auth");

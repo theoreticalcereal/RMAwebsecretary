@@ -1,14 +1,3 @@
-// Admin-only lesson and approval management.
-// This endpoint is behind admin session auth.
-//
-// GET    /api/admin-lessons  -> list all lessons + exceptions + approval settings + pending changes
-// POST   /api/admin-lessons  -> add lesson (legacy behavior) or settings/pending ops
-//   - { operation: "save_settings", settings: {...} }
-//   - { operation: "approve_change", id: 1 }
-//   - { operation: "reject_change", id: 1, note: "optional" }
-//   - legacy: add lesson body without operation
-// PUT    /api/admin-lessons  -> update a lesson (pass id in body)
-// DELETE /api/admin-lessons  -> delete a lesson (pass id in body)
 
 const {
   getLessonStore,
@@ -20,6 +9,8 @@ const {
   writeApprovalSettings,
   readPendingChanges,
   writePendingChanges,
+  readUserIdentityMap,
+  updateUserIdentity,
   jsonResponse,
   nextId,
   timesOverlap,
@@ -28,6 +19,10 @@ const { getAdminSession } = require("./_auth");
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SUPPORTED_MODES = new Set(["manual", "automatic"]);
+
+function isEmailLike(value) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || "").trim());
+}
 
 function normalizeSettingsPayload(raw) {
   const safeMinHours = Number(raw?.auto?.minHoursBefore);
@@ -41,6 +36,25 @@ function normalizeSettingsPayload(raw) {
       minReasonLength: Number.isFinite(safeMinReason) ? Math.max(0, Math.floor(safeMinReason)) : 10,
     },
   };
+}
+
+function formatUserIdentities(identityMap) {
+  return Object.entries(identityMap || {}).map(([userId, identity]) => ({
+    userId,
+    email: identity?.email || null,
+    name: identity?.name || null,
+    firstSeenEmail: identity?.firstSeenEmail || null,
+    firstSeenAt: identity?.firstSeenAt || null,
+    lastSeenAt: identity?.lastSeenAt || null,
+    lastUpdatedAt: identity?.lastUpdatedAt || null,
+  }));
+}
+
+function resolveRequesterEmail(identityMap, change) {
+  if (isEmailLike(change.requestedByEmail)) return change.requestedByEmail;
+  if (!change.requestedBy) return null;
+  const identity = identityMap[change.requestedBy];
+  return identity?.email || identity?.firstSeenEmail || null;
 }
 
 function validateLesson(body) {
@@ -192,19 +206,25 @@ exports.handler = async (event) => {
     const store = getLessonStore(event);
 
     if (event.httpMethod === "GET") {
-      const [lessons, exceptions, approvalSettings, pendingChanges] = await Promise.all([
+      const [lessons, exceptions, approvalSettings, pendingChanges, userIdentityMap] = await Promise.all([
         readLessons(store),
         readExceptions(store),
         readApprovalSettings(store),
         readPendingChanges(store),
+        readUserIdentityMap(store),
       ]);
+      const pendingChangesWithEmails = pendingChanges.map((change) => ({
+        ...change,
+        requestedByEmail: resolveRequesterEmail(userIdentityMap, change),
+      }));
       return jsonResponse(200, {
         lessons,
         exceptions,
         dayNames: DAY_NAMES,
         approvalSettings,
-        pendingChanges: pendingChanges.filter((item) => item.status === "pending"),
-        allPendingChanges: pendingChanges,
+        userIdentities: formatUserIdentities(userIdentityMap),
+        pendingChanges: pendingChangesWithEmails.filter((item) => item.status === "pending"),
+        allPendingChanges: pendingChangesWithEmails,
       });
     }
 
@@ -216,6 +236,29 @@ exports.handler = async (event) => {
         const settings = normalizeSettingsPayload(body.settings || {});
         await writeApprovalSettings(store, settings);
         return jsonResponse(200, { approvalSettings: settings, saved: true });
+      }
+
+      if (operation === "update_user_identity") {
+        const userId = String(body.userId || "").trim();
+        if (!userId) return jsonResponse(400, { error: "userId is required for update_user_identity" });
+        const hasEmail = Object.prototype.hasOwnProperty.call(body, "email");
+        const hasName = Object.prototype.hasOwnProperty.call(body, "name");
+        if (!hasEmail && !hasName) {
+          return jsonResponse(400, { error: "No identity fields provided for update_user_identity." });
+        }
+
+        const result = await updateUserIdentity(store, userId, {
+          ...(Object.prototype.hasOwnProperty.call(body, "email") ? { email: body.email } : {}),
+          ...(Object.prototype.hasOwnProperty.call(body, "name") ? { name: body.name } : {}),
+        });
+        if (result === null) {
+          return jsonResponse(404, { error: "User identity not found" });
+        }
+        if (result.error === "invalid_email") {
+          return jsonResponse(400, { error: "Invalid email." });
+        }
+
+        return jsonResponse(200, { userIdentity: { userId, ...result }, saved: true });
       }
 
       if (operation === "approve_change") {
@@ -274,7 +317,6 @@ exports.handler = async (event) => {
         return jsonResponse(200, { reviewedChange: pendingChanges[idx], status: pendingChanges[idx].status });
       }
 
-      // Legacy behavior: add lesson.
       const errors = validateLesson(body);
       if (errors.length) return jsonResponse(400, { errors });
 

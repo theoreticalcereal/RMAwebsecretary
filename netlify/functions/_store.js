@@ -1,30 +1,11 @@
-// Shared helper for reading/writing lesson data in Netlify Blobs.
-// We store two JSON documents in a single "lesson-secretary" store:
-//   "lessons"    -> array of lesson objects (recurring weekly or one-off)
-//   "exceptions" -> array of exception objects (cancel/reschedule of a single occurrence)
-//
-// This is intentionally simple (whole-array read/write) rather than one blob
-// per lesson, because the expected data size is tiny (a handful of lessons).
 
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 function getLessonStore(event) {
   try {
-    // Required in "Lambda compatibility mode", which is what Netlify
-    // Functions use by default for CommonJS handlers like this one.
     connectLambda(event);
-    // Deliberately using the default (eventual) consistency rather than
-    // "strong" here. Strong consistency requires an 'uncachedEdgeURL'
-    // property that isn't always present (e.g. some netlify dev / local
-    // contexts), which surfaces as an opaque read failure. This app writes
-    // a handful of times a day, so eventual consistency (propagates in
-    // low single-digit seconds) is more than good enough and avoids that
-    // failure mode entirely.
     return getStore({ name: "lesson-secretary" });
   } catch (err) {
-    // Blobs setup failures are the most common cause of an opaque 500 on
-    // every request. Wrap with a clearer message so it's diagnosable from
-    // the function's JSON response instead of just "internal error".
     throw new Error(`Failed to initialize Blobs store: ${err.message || err}`);
   }
 }
@@ -47,9 +28,6 @@ async function writeExceptions(store, exceptions) {
   await store.setJSON("exceptions", exceptions);
 }
 
-// Daily usage tracking for the natural-language assistant, keyed by
-// "usage:YYYY-MM-DD:<userId>". One authenticated user should not
-// affect another user's quota.
 function todayKey(userId) {
   return `usage:${new Date().toISOString().slice(0, 10)}:${userId}`;
 }
@@ -69,6 +47,21 @@ async function writeUsage(store, userId, usage) {
 
 const APPROVAL_SETTINGS_KEY = "approval_settings";
 const PENDING_CHANGES_KEY = "pending_changes";
+const USER_IDENTITY_MAP_KEY = "user_identity_map";
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
+}
+
+function normalizeIdentityName(value) {
+  return String(value || "").trim();
+}
+
+function normalizeIdentityEmail(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || !isValidEmail(normalized)) return "";
+  return normalized;
+}
 
 function getDefaultApprovalSettings() {
   return {
@@ -108,18 +101,85 @@ async function writePendingChanges(store, pendingChanges) {
   await store.setJSON(PENDING_CHANGES_KEY, pendingChanges);
 }
 
-// Lists every usage key for today, for the admin dashboard's "how many
-// people used the assistant today" view. Netlify Blobs list() returns
-// blobs by key prefix.
+async function readUserIdentityMap(store) {
+  const data = await store.get(USER_IDENTITY_MAP_KEY, { type: "json" });
+  if (!data || typeof data !== "object") return {};
+  return data;
+}
+
+async function writeUserIdentityMap(store, identityMap) {
+  await store.setJSON(USER_IDENTITY_MAP_KEY, identityMap || {});
+}
+
+async function recordUserIdentity(store, userId, email) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return;
+
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (!normalizedEmail) return;
+
+  const identities = await readUserIdentityMap(store);
+  const now = new Date().toISOString();
+  const existing = identities[normalizedUserId] || {};
+
+  identities[normalizedUserId] = {
+    ...(typeof existing === "object" && existing ? existing : {}),
+    email: existing.email || normalizedEmail,
+    name: existing?.name || null,
+    firstSeenEmail: existing.firstSeenEmail || normalizedEmail,
+    firstSeenAt: existing.firstSeenAt || now,
+    lastSeenAt: now,
+    lastSeenEmail: normalizedEmail,
+  };
+
+  await writeUserIdentityMap(store, identities);
+}
+
+async function updateUserIdentity(store, userId, payload) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+
+  const identities = await readUserIdentityMap(store);
+  const existing = identities[normalizedUserId];
+  if (!existing || typeof existing !== "object") return null;
+
+  const updates = {};
+  if (Object.prototype.hasOwnProperty.call(payload || {}, "email")) {
+    const email = normalizeIdentityEmail(payload.email);
+    if (!email) return { error: "invalid_email" };
+    updates.email = email;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload || {}, "name")) {
+    updates.name = normalizeIdentityName(payload.name) || null;
+  }
+
+  if (Object.keys(updates).length === 0) return existing;
+
+  identities[normalizedUserId] = {
+    ...existing,
+    ...updates,
+    lastUpdatedAt: new Date().toISOString(),
+  };
+  await writeUserIdentityMap(store, identities);
+  return identities[normalizedUserId];
+}
+
 async function listTodayUsage(store) {
   const prefix = `usage:${new Date().toISOString().slice(0, 10)}:`;
-  const { blobs } = await store.list({ prefix });
+  const [identityMap, listing] = await Promise.all([
+    readUserIdentityMap(store),
+    store.list({ prefix }),
+  ]);
+  const blobs = listing?.blobs || [];
   const results = [];
   for (const blob of blobs) {
     const data = await store.get(blob.key, { type: "json" });
+    const userId = blob.key.slice(prefix.length);
+    const identity = identityMap[userId];
     results.push({
-      userId: blob.key.slice(prefix.length),
-      userEmail: data?.userEmail || null,
+      userId,
+      userEmail: data?.userEmail || identity?.email || identity?.firstSeenEmail || null,
       count: data?.count ?? 0,
       maintainerNotified: data?.maintainerNotified ?? false,
     });
@@ -139,13 +199,11 @@ function nextId(items) {
   return items.length ? Math.max(...items.map((i) => i.id)) + 1 : 1;
 }
 
-// Convert "16:00" -> 960 minutes-since-midnight, for easy comparison.
 function toMinutes(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;
 }
 
-// True if [aStart,aEnd) overlaps [bStart,bEnd), all "HH:MM" strings.
 function timesOverlap(aStart, aEnd, bStart, bEnd) {
   const as = toMinutes(aStart), ae = toMinutes(aEnd);
   const bs = toMinutes(bStart), be = toMinutes(bEnd);
@@ -164,6 +222,10 @@ module.exports = {
   writeApprovalSettings,
   readPendingChanges,
   writePendingChanges,
+  readUserIdentityMap,
+  writeUserIdentityMap,
+  recordUserIdentity,
+  updateUserIdentity,
   listTodayUsage,
   jsonResponse,
   nextId,

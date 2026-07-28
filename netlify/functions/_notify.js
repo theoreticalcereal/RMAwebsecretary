@@ -1,13 +1,3 @@
-// Sends a plain-text notification email to the maintainer via Resend's REST
-// API (https://resend.com). Uses raw fetch rather than the resend npm
-// package to avoid an extra dependency for a single API call.
-//
-// Requires two env vars:
-//   RESEND_API_KEY    - from resend.com (free tier: 3,000 emails/mo, 100/day)
-//   MAINTAINER_EMAIL  - where the notification should be sent
-//
-// If either is missing, this silently no-ops (logged) rather than throwing 
-// a missing notification shouldn't break the assistant's rate-limit behavior.
 
 const RESEND_URL = "https://api.resend.com/emails";
 
@@ -28,9 +18,6 @@ async function notifyMaintainer({ promptCount, date }) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        // resend.dev sending address works without domain verification,
-        // for free-tier/testing use. Swap for a verified domain address
-        // once you've set one up in Resend.
         from: "Lesson Secretary <onboarding@resend.dev>",
         to: [to],
         subject: "Lesson Secretary: daily assistant limit reached",

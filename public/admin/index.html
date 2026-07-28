@@ -15,7 +15,6 @@
     --muted: #6b7280;
     --danger: #dc2626;
   }
-  * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -144,6 +143,41 @@
     border-color: var(--danger);
   }
   .pending-hidden { display: none; }
+
+  .identity-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 24px;
+    font-size: 0.82rem;
+  }
+  .identity-table th, .identity-table td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .identity-table th { background: #f0f2f5; color: var(--muted); font-size: 0.78rem; }
+  .identity-table tr:last-child td { border-bottom: none; }
+  .identity-table input[type="text"],
+  .identity-table input[type="email"] {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 7px;
+    font-size: 0.8rem;
+  }
+  .identity-table button {
+    border: 1px solid var(--border);
+    background: #fff;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
 
   .section-heading {
     font-size: 1rem;
@@ -348,6 +382,22 @@
       </thead>
       <tbody id="usage-tbody"></tbody>
     </table>
+
+    <h2 class="section-heading">Linked user identities</h2>
+    <table class="identity-table" id="identity-table">
+      <thead>
+        <tr>
+          <th>User ID</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>First seen</th>
+          <th>Last seen</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="identity-tbody"></tbody>
+    </table>
+    <div class="empty" id="identity-empty">No linked users yet.</div>
 
     <h2 class="section-heading">Assistant approval settings</h2>
     <div class="settings-form">
@@ -707,7 +757,7 @@ function renderPendingRows(pendingChanges) {
     row.innerHTML = `
       <td>${escapeHtml((change.createdAt || "").replace("T", " ").slice(0, 16))}</td>
       <td>${escapeHtml(formatActionType(change.action))}</td>
-      <td>${escapeHtml(change.requestedByEmail || change.requestedBy || "user")}</td>
+      <td>${escapeHtml(change.requestedByEmail || "unmapped-user")}</td>
       <td>${escapeHtml(change.autoCheck?.requiredReason || "—")}</td>
       <td>${escapeHtml(formatChangeDetails(change.action))}</td>
       <td class="pending-actions">
@@ -726,6 +776,76 @@ function renderPendingRows(pendingChanges) {
         await performReviewChange(id, decision);
       } catch (err) {
         showError(`Couldn't ${decision} change #${id}: ${err.message}`);
+      }
+    });
+  });
+}
+
+function renderIdentityRows(identities) {
+  const tbody = document.getElementById("identity-tbody");
+  const empty = document.getElementById("identity-empty");
+  const rows = Array.isArray(identities) ? identities : [];
+
+  tbody.innerHTML = "";
+  if (!rows.length) {
+    empty.style.display = "block";
+    return;
+  }
+
+  empty.style.display = "none";
+  rows
+    .slice()
+    .sort((a, b) => String(a.userId).localeCompare(String(b.userId)))
+    .forEach((identity) => {
+      const userId = identity.userId || "";
+      const currentName = identity.name || "";
+      const currentEmail = identity.email || "";
+      const row = document.createElement("tr");
+      row.dataset.userId = userId;
+      row.dataset.originalName = currentName;
+      row.dataset.originalEmail = currentEmail;
+      row.innerHTML = `
+        <td class="identity-user-id">${escapeHtml(userId)}</td>
+        <td><input data-field="name" type="text" value="${escapeHtml(currentName)}" placeholder="Optional name" /></td>
+        <td><input data-field="email" type="email" value="${escapeHtml(currentEmail)}" placeholder="user@example.com" /></td>
+        <td>${identity.firstSeenAt ? escapeHtml(identity.firstSeenAt.replace("T", " ").slice(0, 16)) : "—"}</td>
+        <td>${identity.lastSeenAt ? escapeHtml(identity.lastSeenAt.replace("T", " ").slice(0, 16)) : "—"}</td>
+        <td><button type="button" class="identity-save-btn" data-user-id="${escapeHtml(identity.userId || "")}">Save</button></td>
+      `;
+      tbody.appendChild(row);
+    });
+
+  tbody.querySelectorAll(".identity-save-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = btn.dataset.userId;
+      const tr = btn.closest("tr");
+      const nameInput = tr.querySelector('input[data-field="name"]');
+      const emailInput = tr.querySelector('input[data-field="email"]');
+      const originalName = tr.dataset.originalName || "";
+      const originalEmail = tr.dataset.originalEmail || "";
+      const payload = {
+        operation: "update_user_identity",
+        userId,
+      };
+
+      const nextName = nameInput ? (nameInput.value || "").trim() : originalName;
+      const nextEmail = emailInput ? (emailInput.value || "").trim() : originalEmail;
+      if (nextName !== originalName) payload.name = nextName;
+      if (nextEmail !== originalEmail) payload.email = nextEmail;
+
+      if (!payload.name && !payload.email) {
+        return;
+      }
+
+      try {
+        await adminFetch("/api/admin-lessons", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        refreshAll();
+      } catch (err) {
+        showError(`Couldn't update identity for ${userId}: ${err.message}`);
       }
     });
   });
@@ -809,7 +929,7 @@ async function refreshAll() {
       usageData.usage.forEach((u) => {
         const row = document.createElement("tr");
         row.innerHTML = `
-          <td>${escapeHtml(u.userEmail || u.userId || u.visitorId || "unknown")}</td>
+        <td>${escapeHtml(u.userEmail || "unmapped-user")}</td>
           <td>${u.count} / 5</td>
           <td>${u.maintainerNotified ? "Yes" : "No"}</td>
         `;
@@ -819,6 +939,7 @@ async function refreshAll() {
 
     renderCalendarData(adminData);
     renderApprovalSection(adminData);
+    renderIdentityRows(adminData.userIdentities || []);
     renderPendingRows(adminData.pendingChanges || []);
     updatePendingToggleUI();
   } catch (err) {
@@ -826,7 +947,6 @@ async function refreshAll() {
   }
 }
 
-// Manual add form
 document.getElementById("manual-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = {

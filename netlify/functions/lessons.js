@@ -1,9 +1,3 @@
-// Public, read-only endpoint. The calendar UI uses this to display lessons.
-// Creating/editing/deleting lessons is NOT available here anymore - that
-// only happens through the AI assistant (public) or the admin dashboard
-// (maintainer only, see admin-lessons.js).
-//
-// GET /api/lessons -> list all lessons + exceptions
 
 const { getLessonStore, readLessons, readExceptions, jsonResponse } = require("./_store");
 

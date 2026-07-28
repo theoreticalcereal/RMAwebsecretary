@@ -6,9 +6,9 @@ const { sendLoginCodeEmail } = require("./_notify");
 const OTP_PREFIX = "auth:otp:";
 const SESSION_PREFIX = "auth:session:";
 const SESSION_COOKIE_NAME = "ls_session";
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
-const CODE_TTL_MS = 1000 * 60 * 10; // 10 minutes
-const COOLDOWN_MS = 30 * 1000; // 30 seconds between requests per email
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const CODE_TTL_MS = 1000 * 60 * 10;
+const COOLDOWN_MS = 30 * 1000;
 const MAX_OTP_ATTEMPTS = 6;
 const ADMIN_EMAILS = normalizeEmail(process.env.ADMIN_EMAILS || process.env.ADMIN_EMAIL || "");
 
