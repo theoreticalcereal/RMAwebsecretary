@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Lesson Secretary (Stage 5 — Rate Limited)</title>
+<title>Lesson Secretary</title>
 <style>
   :root {
     --border: #d8dee4;
@@ -29,13 +29,6 @@
   }
   header h1 { margin: 0; font-size: 1.3rem; }
   header p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
-  .stage-banner {
-    background: #fff8e1;
-    color: #92700a;
-    padding: 8px 24px;
-    font-size: 0.82rem;
-    border-bottom: 1px solid #f0e0a8;
-  }
 
   main {
     max-width: 1000px;
@@ -67,6 +60,7 @@
     font-size: 0.95rem;
     cursor: pointer;
   }
+  .assistant-box button:disabled { opacity: 0.6; cursor: default; }
   .assistant-reply {
     margin-top: 12px;
     padding: 10px 12px;
@@ -109,52 +103,22 @@
     padding: 6px 8px;
     margin-bottom: 6px;
     font-size: 0.82rem;
-    position: relative;
   }
   .lesson-card .time { font-weight: 600; }
   .lesson-card .student { display: block; }
   .lesson-card .subject { color: var(--muted); font-size: 0.78rem; }
-  .lesson-card .del-btn {
-    position: absolute;
-    top: 4px;
-    right: 6px;
-    border: none;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 0.8rem;
-  }
-  .lesson-card .del-btn:hover { color: var(--danger); }
   .empty { color: var(--muted); font-size: 0.8rem; }
 
-  .add-form {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    margin-top: 24px;
+  .load-error {
+    background: #fdecea;
+    color: var(--danger);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+    display: none;
   }
-  .add-form h2 { margin: 0 0 12px; font-size: 1rem; }
-  .add-form .row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 10px;
-    margin-bottom: 10px;
-  }
-  .add-form input, .add-form select {
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 0.9rem;
-  }
-  .add-form button {
-    padding: 9px 16px;
-    background: var(--text);
-    color: white;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-  }
+  .load-error.show { display: block; }
 
   @media (max-width: 800px) {
     .calendar { grid-template-columns: repeat(2, 1fr); }
@@ -163,16 +127,14 @@
 </head>
 <body>
 
-<div class="stage-banner">
-  Stage 5 (final): Assistant is capped at 5 requests/day, tracked server-side. Once hit, further requests are blocked and the maintainer is emailed once.
-</div>
-
 <header>
   <h1>Lesson Secretary</h1>
-  <p>Weekly lesson schedule — add lessons manually below.</p>
+  <p>Weekly lesson schedule. Ask the assistant below to add, cancel, or check a lesson.</p>
 </header>
 
 <main>
+  <div class="load-error" id="load-error"></div>
+
   <div class="assistant-box">
     <form id="assistant-form">
       <input type="text" id="assistant-input" placeholder='e.g. "add algebra with Sam every Tuesday 4-5pm"' autocomplete="off" />
@@ -183,38 +145,10 @@
   </div>
 
   <div class="calendar" id="calendar"></div>
-
-  <div class="add-form">
-    <h2>Add a lesson manually</h2>
-    <form id="manual-form">
-      <div class="row">
-        <input type="text" id="m-student" placeholder="Student name" required />
-        <input type="text" id="m-subject" placeholder="Subject (optional)" />
-        <select id="m-day" required>
-          <option value="0">Monday</option>
-          <option value="1">Tuesday</option>
-          <option value="2">Wednesday</option>
-          <option value="3">Thursday</option>
-          <option value="4">Friday</option>
-          <option value="5">Saturday</option>
-          <option value="6">Sunday</option>
-        </select>
-        <input type="time" id="m-start" required />
-        <input type="time" id="m-end" required />
-      </div>
-      <button type="submit">Add lesson</button>
-    </form>
-  </div>
 </main>
 
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-async function fetchLessons() {
-  const res = await fetch("/api/lessons");
-  if (!res.ok) throw new Error("Failed to load lessons");
-  return res.json();
-}
 
 function formatTime(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
@@ -227,6 +161,25 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+function showLoadError(message) {
+  const el = document.getElementById("load-error");
+  el.textContent = message;
+  el.classList.add("show");
+}
+
+function clearLoadError() {
+  document.getElementById("load-error").classList.remove("show");
+}
+
+async function fetchLessons() {
+  const res = await fetch("/api/lessons");
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || data.error || `Failed to load lessons (HTTP ${res.status})`);
+  }
+  return data;
 }
 
 function renderCalendar(data) {
@@ -260,7 +213,6 @@ function renderCalendar(data) {
         const card = document.createElement("div");
         card.className = "lesson-card";
         card.innerHTML = `
-          <button class="del-btn" title="Delete" data-id="${l.id}">✕</button>
           <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
           <span class="student">${escapeHtml(l.student)}</span>
           ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
@@ -270,56 +222,22 @@ function renderCalendar(data) {
     }
     cal.appendChild(col);
   });
-
-  cal.querySelectorAll(".del-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const id = Number(btn.dataset.id);
-      if (!confirm("Delete this lesson?")) return;
-      await fetch("/api/lessons", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      });
-      refresh();
-    });
-  });
 }
 
 async function refresh() {
   try {
     const data = await fetchLessons();
+    clearLoadError();
     renderCalendar(data);
   } catch (err) {
     console.error(err);
+    showLoadError(`Couldn't load the calendar: ${err.message}`);
   }
 }
 
-// Manual add form — now hitting the real backend from Stage 3 onward.
-document.getElementById("manual-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const body = {
-    student: document.getElementById("m-student").value,
-    subject: document.getElementById("m-subject").value,
-    day_of_week: Number(document.getElementById("m-day").value),
-    start_time: document.getElementById("m-start").value,
-    end_time: document.getElementById("m-end").value,
-    recurring: true,
-  };
-  const res = await fetch("/api/lessons", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    alert(data.error || (data.errors && data.errors.join(", ")) || "Failed to add lesson");
-    return;
-  }
-  e.target.reset();
-  refresh();
-});
-
-// Assistant form — Stage 5: rate-limited to 5 requests/day, tracked server-side.
+// Assistant form: the only way lessons get added, cancelled, or removed
+// from this page. Rate limited to 5 requests/day per visitor, tracked
+// server-side via a cookie.
 const assistantForm = document.getElementById("assistant-form");
 const assistantInput = document.getElementById("assistant-input");
 const assistantSubmit = document.getElementById("assistant-submit");
@@ -329,14 +247,14 @@ const assistantUsage = document.getElementById("assistant-usage");
 function renderUsage(usage) {
   if (!usage) return;
   assistantUsage.textContent = usage.limitReached
-    ? `Daily limit reached (${usage.used}/${usage.limit}) — resets at midnight.`
+    ? `Daily limit reached (${usage.used}/${usage.limit}). Resets at midnight.`
     : `${usage.remaining} of ${usage.limit} requests left today.`;
   assistantUsage.classList.toggle("low", usage.remaining <= 1);
 
   if (usage.limitReached) {
     assistantInput.disabled = true;
     assistantSubmit.disabled = true;
-    assistantInput.placeholder = "Daily limit reached — try again tomorrow";
+    assistantInput.placeholder = "Daily limit reached, try again tomorrow";
   } else {
     assistantInput.disabled = false;
     assistantInput.placeholder = 'e.g. "add algebra with Sam every Tuesday 4-5pm"';
@@ -346,9 +264,12 @@ function renderUsage(usage) {
 async function fetchUsage() {
   try {
     const res = await fetch("/api/assistant");
-    if (!res.ok) return;
-    const usage = await res.json();
-    renderUsage(usage);
+    const data = await res.json();
+    if (!res.ok) {
+      console.error("Failed to load usage:", data.detail || data.error);
+      return;
+    }
+    renderUsage(data);
   } catch (err) {
     console.error(err);
   }
@@ -372,7 +293,7 @@ assistantForm.addEventListener("submit", async (e) => {
     const data = await res.json();
 
     if (!res.ok) {
-      assistantReply.textContent = data.error || "Something went wrong.";
+      assistantReply.textContent = data.detail || data.error || "Something went wrong.";
       assistantReply.classList.add("show", "error");
     } else {
       assistantReply.textContent = data.action?.reply || (data.applied ? "Done." : "Okay.");
@@ -383,7 +304,7 @@ assistantForm.addEventListener("submit", async (e) => {
       }
     }
   } catch (err) {
-    assistantReply.textContent = "Network error — please try again.";
+    assistantReply.textContent = "Network error, please try again.";
     assistantReply.classList.add("show", "error");
   } finally {
     assistantSubmit.textContent = "Send";

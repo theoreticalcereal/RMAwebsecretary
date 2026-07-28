@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lesson Secretary Admin Dashboard</title>
+<style>
+  :root {
+    --border: #d8dee4;
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --accent: #2563eb;
+    --accent-light: #eaf1ff;
+    --text: #1f2430;
+    --muted: #6b7280;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+
+  main { max-width: 1000px; margin: 0 auto; padding: 24px; }
+
+  .login-box {
+    max-width: 360px;
+    margin: 60px auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+  }
+  .login-box h2 { margin: 0 0 12px; font-size: 1.05rem; }
+  .login-box input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    margin-bottom: 10px;
+  }
+  .login-box button {
+    width: 100%;
+    padding: 10px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  .login-error {
+    color: var(--danger);
+    font-size: 0.85rem;
+    margin-top: 8px;
+    display: none;
+  }
+  .login-error.show { display: block; }
+
+  .hidden { display: none !important; }
+
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .stat-card .value { font-size: 1.6rem; font-weight: 700; }
+  .stat-card .label { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+
+  .usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 24px;
+    font-size: 0.85rem;
+  }
+  .usage-table th, .usage-table td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .usage-table th { background: #f0f2f5; color: var(--muted); font-weight: 600; }
+  .usage-table tr:last-child td { border-bottom: none; }
+
+  .section-heading {
+    font-size: 1rem;
+    margin: 24px 0 12px;
+  }
+
+  .calendar {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .day-col {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    min-height: 120px;
+  }
+  .day-col h3 {
+    margin: 0 0 8px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .lesson-card {
+    background: var(--accent-light);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+    position: relative;
+  }
+  .lesson-card .time { font-weight: 600; }
+  .lesson-card .student { display: block; }
+  .lesson-card .subject { color: var(--muted); font-size: 0.75rem; }
+  .lesson-card .del-btn {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .lesson-card .del-btn:hover { color: var(--danger); }
+  .empty { color: var(--muted); font-size: 0.78rem; }
+
+  .add-form {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 24px;
+  }
+  .add-form h2 { margin: 0 0 12px; font-size: 1rem; }
+  .add-form .row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .add-form input, .add-form select {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  .add-form button {
+    padding: 9px 16px;
+    background: var(--text);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .error-banner {
+    background: #fdecea;
+    color: var(--danger);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .error-banner.show { display: block; }
+
+  @media (max-width: 800px) {
+    .calendar { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Lesson Secretary Admin Dashboard</h1>
+  <p>Manage lessons directly and see today's assistant usage.</p>
+</header>
+
+<main>
+  <div id="login-view" class="login-box">
+    <h2>Admin login</h2>
+    <input type="password" id="password-input" placeholder="Admin password" autocomplete="current-password" />
+    <button id="login-btn">Log in</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+
+  <div id="dashboard-view" class="hidden">
+    <div class="error-banner" id="error-banner"></div>
+
+    <div class="stats-row" id="stats-row"></div>
+
+    <h2 class="section-heading">Today's assistant usage</h2>
+    <table class="usage-table" id="usage-table">
+      <thead>
+        <tr><th>Visitor</th><th>Prompts used</th><th>Maintainer notified</th></tr>
+      </thead>
+      <tbody id="usage-tbody"></tbody>
+    </table>
+
+    <h2 class="section-heading">Add a lesson</h2>
+    <div class="add-form">
+      <form id="manual-form">
+        <div class="row">
+          <input type="text" id="m-student" placeholder="Student name" required />
+          <input type="text" id="m-subject" placeholder="Subject (optional)" />
+          <select id="m-day" required>
+            <option value="0">Monday</option>
+            <option value="1">Tuesday</option>
+            <option value="2">Wednesday</option>
+            <option value="3">Thursday</option>
+            <option value="4">Friday</option>
+            <option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+          <input type="time" id="m-start" required />
+          <input type="time" id="m-end" required />
+        </div>
+        <button type="submit">Add lesson</button>
+      </form>
+    </div>
+
+    <h2 class="section-heading">Calendar</h2>
+    <div class="calendar" id="calendar"></div>
+  </div>
+</main>
+
+<script>
+const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+let adminPassword = null;
+
+function formatTime(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function showError(message) {
+  const el = document.getElementById("error-banner");
+  el.textContent = message;
+  el.classList.add("show");
+}
+
+function clearError() {
+  document.getElementById("error-banner").classList.remove("show");
+}
+
+async function adminFetch(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      "x-admin-password": adminPassword,
+    },
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || data.error || `Request failed (HTTP ${res.status})`);
+  }
+  return data;
+}
+
+// Login
+document.getElementById("login-btn").addEventListener("click", async () => {
+  const pwInput = document.getElementById("password-input");
+  const loginError = document.getElementById("login-error");
+  const candidate = pwInput.value;
+  loginError.classList.remove("show");
+
+  try {
+    // Verify the password by hitting a real admin endpoint. If it works,
+    // we know the password is correct.
+    const res = await fetch("/api/admin-stats", {
+      headers: { "x-admin-password": candidate },
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.detail || "Incorrect password");
+    }
+    adminPassword = candidate;
+    document.getElementById("login-view").classList.add("hidden");
+    document.getElementById("dashboard-view").classList.remove("hidden");
+    refreshAll();
+  } catch (err) {
+    loginError.textContent = err.message;
+    loginError.classList.add("show");
+  }
+});
+
+document.getElementById("password-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("login-btn").click();
+});
+
+// Stats
+async function refreshStats() {
+  try {
+    const data = await adminFetch("/api/admin-stats");
+    const statsRow = document.getElementById("stats-row");
+    statsRow.innerHTML = `
+      <div class="stat-card"><div class="value">${data.totalVisitorsToday}</div><div class="label">Visitors today</div></div>
+      <div class="stat-card"><div class="value">${data.totalPromptsToday}</div><div class="label">Total prompts today</div></div>
+      <div class="stat-card"><div class="value">${data.visitorsAtLimit}</div><div class="label">Visitors at daily limit</div></div>
+    `;
+
+    const tbody = document.getElementById("usage-tbody");
+    tbody.innerHTML = "";
+    if (data.usage.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3" class="empty">No assistant activity yet today</td></tr>`;
+    } else {
+      data.usage.forEach((u) => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${escapeHtml(u.visitorId.slice(0, 8))}…</td>
+          <td>${u.count} / 5</td>
+          <td>${u.maintainerNotified ? "Yes" : "No"}</td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+  } catch (err) {
+    showError(`Couldn't load usage stats: ${err.message}`);
+  }
+}
+
+// Calendar (admin view, with delete buttons)
+async function refreshCalendar() {
+  try {
+    const data = await adminFetch("/api/admin-lessons");
+    clearError();
+
+    const cal = document.getElementById("calendar");
+    cal.innerHTML = "";
+
+    const byDay = {};
+    for (let i = 0; i < 7; i++) byDay[i] = [];
+    data.lessons.filter((l) => l.active !== false).forEach((l) => byDay[l.day_of_week].push(l));
+    for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+    DAY_NAMES.forEach((name, idx) => {
+      const col = document.createElement("div");
+      col.className = "day-col";
+      const heading = document.createElement("h3");
+      heading.textContent = name;
+      col.appendChild(heading);
+
+      const lessons = byDay[idx];
+      if (lessons.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No lessons";
+        col.appendChild(empty);
+      } else {
+        lessons.forEach((l) => {
+          const card = document.createElement("div");
+          card.className = "lesson-card";
+          card.innerHTML = `
+            <button class="del-btn" title="Delete" data-id="${l.id}">✕</button>
+            <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
+            <span class="student">${escapeHtml(l.student)}</span>
+            ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
+          `;
+          col.appendChild(card);
+        });
+      }
+      cal.appendChild(col);
+    });
+
+    cal.querySelectorAll(".del-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = Number(btn.dataset.id);
+        if (!confirm("Delete this lesson?")) return;
+        try {
+          await adminFetch("/api/admin-lessons", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id }),
+          });
+          refreshAll();
+        } catch (err) {
+          showError(`Couldn't delete lesson: ${err.message}`);
+        }
+      });
+    });
+  } catch (err) {
+    showError(`Couldn't load lessons: ${err.message}`);
+  }
+}
+
+function refreshAll() {
+  refreshStats();
+  refreshCalendar();
+}
+
+// Manual add form
+document.getElementById("manual-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    student: document.getElementById("m-student").value,
+    subject: document.getElementById("m-subject").value,
+    day_of_week: Number(document.getElementById("m-day").value),
+    start_time: document.getElementById("m-start").value,
+    end_time: document.getElementById("m-end").value,
+    recurring: true,
+  };
+  try {
+    await adminFetch("/api/admin-lessons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    e.target.reset();
+    refreshAll();
+  } catch (err) {
+    showError(`Couldn't add lesson: ${err.message}`);
+  }
+});
+</script>
+
+</body>
+</html>

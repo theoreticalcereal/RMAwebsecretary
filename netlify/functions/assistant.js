@@ -1,3 +1,8 @@
+// Public natural-language assistant, powered by NVIDIA NIM. This is the
+// ONLY way public users can create, cancel, or delete lessons - there is
+// no manual add form on the public page anymore. The maintainer can still
+// manage lessons directly through the admin dashboard.
+//
 // Adds a daily cap of 5 prompts PER VISITOR, tracked server-side in Blobs
 // and identified via a "visitor_id" cookie (can't be bypassed by reloading
 // or clearing localStorage; a visitor would need to clear cookies or use a
@@ -27,7 +32,7 @@ const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 // Any NIM chat model works here; this one is small/fast and free-tier friendly.
 const NIM_MODEL = "meta/llama-3.1-70b-instruct";
 
-// Daily cap on assistant prompts, to prevent runaway NIM API usage.
+// Daily cap on assistant prompts per visitor, to prevent runaway NIM API usage.
 const DAILY_PROMPT_LIMIT = 5;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -64,22 +69,28 @@ async function callNim(apiKey, userMessage, lessons) {
     .map((l) => `id=${l.id} ${l.student} (${l.subject || "no subject"}) ${DAY_NAMES[l.day_of_week]} ${l.start_time}-${l.end_time}${l.recurring ? " [weekly]" : ` [one-off ${l.specific_date}]`}`)
     .join("\n") || "(no lessons scheduled yet)";
 
-  const res = await fetch(NIM_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: NIM_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `CURRENT LESSONS:\n${lessonsSummary}\n\nUSER REQUEST:\n${userMessage}` },
-      ],
-      temperature: 0.2,
-      max_tokens: 500,
-    }),
-  });
+  let res;
+  try {
+    res = await fetch(NIM_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: NIM_MODEL,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: `CURRENT LESSONS:\n${lessonsSummary}\n\nUSER REQUEST:\n${userMessage}` },
+        ],
+        temperature: 0.2,
+        max_tokens: 500,
+      }),
+    });
+  } catch (networkErr) {
+    // Network-level failure reaching NIM (DNS, timeout, connection refused).
+    throw new Error(`Could not reach NIM API: ${networkErr.message || networkErr}`);
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -111,14 +122,19 @@ async function innerHandler(event, visitorId) {
   // GET: report today's usage without consuming a prompt. Lets the
   // frontend show "N of 5 left" and disable the input on load.
   if (event.httpMethod === "GET") {
-    const store = getLessonStore(event);
-    const usage = await readUsage(store, visitorId);
-    return jsonResponse(200, {
-      limit: DAILY_PROMPT_LIMIT,
-      used: usage.count,
-      remaining: Math.max(0, DAILY_PROMPT_LIMIT - usage.count),
-      limitReached: usage.count >= DAILY_PROMPT_LIMIT,
-    });
+    try {
+      const store = getLessonStore(event);
+      const usage = await readUsage(store, visitorId);
+      return jsonResponse(200, {
+        limit: DAILY_PROMPT_LIMIT,
+        used: usage.count,
+        remaining: Math.max(0, DAILY_PROMPT_LIMIT - usage.count),
+        limitReached: usage.count >= DAILY_PROMPT_LIMIT,
+      });
+    } catch (err) {
+      console.error(err);
+      return jsonResponse(500, { error: "internal error", detail: String(err.message || err) });
+    }
   }
 
   if (event.httpMethod !== "POST") return jsonResponse(405, { error: "method not allowed" });
@@ -137,9 +153,8 @@ async function innerHandler(event, visitorId) {
     return jsonResponse(400, { error: "message is required" });
   }
 
-  const store = getLessonStore(event);
-
   try {
+    const store = getLessonStore(event);
     const usage = await readUsage(store, visitorId);
 
     if (usage.count >= DAILY_PROMPT_LIMIT) {
@@ -156,7 +171,7 @@ async function innerHandler(event, visitorId) {
       return jsonResponse(200, {
         action: {
           action: "limit_reached",
-          reply: "I can't help with any more requests today — I've reached my daily limit. The maintainer has been notified; please reach out to them directly, or try again tomorrow.",
+          reply: "I can't help with any more requests today. I've reached my daily limit. The maintainer has been notified, please reach out to them directly, or try again tomorrow.",
         },
         applied: false,
         limitReached: true,
@@ -255,6 +270,6 @@ async function innerHandler(event, visitorId) {
     return jsonResponse(200, { action, applied: false });
   } catch (err) {
     console.error(err);
-    return jsonResponse(500, { error: "internal error", detail: String(err) });
+    return jsonResponse(500, { error: "internal error", detail: String(err.message || err) });
   }
 }

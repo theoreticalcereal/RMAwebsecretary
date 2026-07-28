@@ -9,10 +9,17 @@
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 function getLessonStore(event) {
-  // Required in "Lambda compatibility mode", which is what Netlify Functions
-  // use by default for CommonJS handlers like this one.
-  connectLambda(event);
-  return getStore({ name: "lesson-secretary", consistency: "strong" });
+  try {
+    // Required in "Lambda compatibility mode", which is what Netlify
+    // Functions use by default for CommonJS handlers like this one.
+    connectLambda(event);
+    return getStore({ name: "lesson-secretary", consistency: "strong" });
+  } catch (err) {
+    // Blobs setup failures are the most common cause of an opaque 500 on
+    // every request. Wrap with a clearer message so it's diagnosable from
+    // the function's JSON response instead of just "internal error".
+    throw new Error(`Failed to initialize Blobs store: ${err.message || err}`);
+  }
 }
 
 async function readLessons(store) {
@@ -51,6 +58,24 @@ async function writeUsage(store, visitorId, usage) {
   await store.setJSON(todayKey(visitorId), usage);
 }
 
+// Lists every usage key for today, for the admin dashboard's "how many
+// people used the assistant today" view. Netlify Blobs list() returns
+// blobs by key prefix.
+async function listTodayUsage(store) {
+  const prefix = `usage:${new Date().toISOString().slice(0, 10)}:`;
+  const { blobs } = await store.list({ prefix });
+  const results = [];
+  for (const blob of blobs) {
+    const data = await store.get(blob.key, { type: "json" });
+    results.push({
+      visitorId: blob.key.slice(prefix.length),
+      count: data?.count ?? 0,
+      maintainerNotified: data?.maintainerNotified ?? false,
+    });
+  }
+  return results;
+}
+
 function jsonResponse(statusCode, body, extraHeaders = {}) {
   return {
     statusCode,
@@ -84,6 +109,7 @@ module.exports = {
   writeExceptions,
   readUsage,
   writeUsage,
+  listTodayUsage,
   jsonResponse,
   nextId,
   timesOverlap,
