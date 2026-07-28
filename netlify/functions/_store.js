@@ -1,4 +1,3 @@
-
 const { getStore, connectLambda } = require("@netlify/blobs");
 
 function getLessonStore(event) {
@@ -32,6 +31,25 @@ function todayKey(userId) {
   return `usage:${new Date().toISOString().slice(0, 10)}:${userId}`;
 }
 
+const USAGE_SETTINGS_KEY = "usage_settings";
+const USER_DAILY_LIMITS_KEY = "user_daily_limits";
+const APPROVAL_SETTINGS_KEY = "approval_settings";
+const PENDING_CHANGES_KEY = "pending_changes";
+const USER_IDENTITY_MAP_KEY = "user_identity_map";
+const NIM_REQUEST_TRACKING_KEY = "nim_request_timestamps";
+
+const DEFAULT_DAILY_PROMPT_LIMIT = 5;
+const NIM_RATE_WINDOW_MS = 60 * 1000;
+const NIM_RATE_LIMIT_PER_WINDOW = 40;
+const RESOLVED_REQUEST_TTL_HOURS = 24;
+const RESOLVED_REQUEST_TTL_MS = RESOLVED_REQUEST_TTL_HOURS * 60 * 60 * 1000;
+
+function normalizeUsageLimit(rawLimit, fallback = DEFAULT_DAILY_PROMPT_LIMIT) {
+  const n = Number(rawLimit);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
 async function readUsage(store, userId) {
   const data = await store.get(todayKey(userId), { type: "json" });
   return {
@@ -45,40 +63,110 @@ async function writeUsage(store, userId, usage) {
   await store.setJSON(todayKey(userId), usage);
 }
 
-const APPROVAL_SETTINGS_KEY = "approval_settings";
-const PENDING_CHANGES_KEY = "pending_changes";
-const USER_IDENTITY_MAP_KEY = "user_identity_map";
-const RESOLVED_REQUEST_TTL_HOURS = 24;
-const RESOLVED_REQUEST_TTL_MS = RESOLVED_REQUEST_TTL_HOURS * 60 * 60 * 1000;
-
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
-}
-
-function normalizeIdentityName(value) {
-  return String(value || "").trim();
-}
-
-function normalizeIdentityEmail(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized || !isValidEmail(normalized)) return "";
-  return normalized;
-}
-
-function getDefaultApprovalSettings() {
+async function getUsageSettings(store) {
+  const data = await store.get(USAGE_SETTINGS_KEY, { type: "json" });
   return {
-    mode: "manual",
-    auto: {
-      minHoursBefore: 24,
-      requireReason: true,
-      minReasonLength: 10,
-    },
+    defaultDailyPromptLimit: normalizeUsageLimit(data?.defaultDailyPromptLimit, DEFAULT_DAILY_PROMPT_LIMIT),
   };
+}
+
+async function writeUsageSettings(store, settings) {
+  await store.setJSON(USAGE_SETTINGS_KEY, {
+    defaultDailyPromptLimit: normalizeUsageLimit(settings?.defaultDailyPromptLimit, DEFAULT_DAILY_PROMPT_LIMIT),
+  });
+}
+
+async function readUserDailyLimits(store) {
+  const data = await store.get(USER_DAILY_LIMITS_KEY, { type: "json" });
+  if (!data || typeof data !== "object") return {};
+  return data;
+}
+
+async function writeUserDailyLimits(store, limits) {
+  await store.setJSON(USER_DAILY_LIMITS_KEY, limits || {});
+}
+
+async function getUserPromptLimit(store, userId) {
+  const [settings, limits] = await Promise.all([getUsageSettings(store), readUserDailyLimits(store)]);
+  const normalizedUserId = String(userId || "").trim();
+  return normalizeUsageLimit(limits[normalizedUserId], settings.defaultDailyPromptLimit);
+}
+
+async function setUserPromptLimit(store, userId, promptLimit) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+
+  const value = normalizeUsageLimit(promptLimit, NaN);
+  const limits = await readUserDailyLimits(store);
+
+  if (!Number.isFinite(value)) {
+    delete limits[normalizedUserId];
+    await writeUserDailyLimits(store, limits);
+    return getUserPromptLimit(store, normalizedUserId);
+  }
+
+  limits[normalizedUserId] = value;
+  await writeUserDailyLimits(store, limits);
+  return value;
+}
+
+async function resetUserPromptLimit(store, userId) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+
+  const limits = await readUserDailyLimits(store);
+  if (!Object.prototype.hasOwnProperty.call(limits, normalizedUserId)) {
+    return getUserPromptLimit(store, normalizedUserId);
+  }
+
+  delete limits[normalizedUserId];
+  await writeUserDailyLimits(store, limits);
+  return getUserPromptLimit(store, normalizedUserId);
+}
+
+async function resetUserUsage(store, userId, fallbackEmail) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+
+  const current = await readUsage(store, normalizedUserId);
+  await writeUsage(store, normalizedUserId, {
+    ...current,
+    count: 0,
+    maintainerNotified: false,
+    userEmail: fallbackEmail || current.userEmail || null,
+  });
+
+  return { userId: normalizedUserId, count: 0, maintainerNotified: false };
+}
+
+async function resetAllUsage(store) {
+  const prefix = `usage:${new Date().toISOString().slice(0, 10)}:`;
+  const listing = await store.list({ prefix });
+  const blobs = listing?.blobs || [];
+
+  for (const blob of blobs) {
+    const userId = String(blob.key || "").slice(prefix.length);
+    const current = await readUsage(store, userId);
+    await writeUsage(store, userId, {
+      ...current,
+      count: 0,
+      maintainerNotified: false,
+    });
+  }
 }
 
 async function readApprovalSettings(store) {
   const data = await store.get(APPROVAL_SETTINGS_KEY, { type: "json" });
-  if (!data) return getDefaultApprovalSettings();
+  if (!data) {
+    return {
+      mode: "manual",
+      auto: {
+        minHoursBefore: 24,
+        requireReason: true,
+        minReasonLength: 10,
+      },
+    };
+  }
 
   return {
     mode: data.mode === "automatic" ? "automatic" : "manual",
@@ -94,9 +182,53 @@ async function writeApprovalSettings(store, settings) {
   await store.setJSON(APPROVAL_SETTINGS_KEY, settings);
 }
 
+async function readNimRequestTimestamps(store) {
+  const data = await store.get(NIM_REQUEST_TRACKING_KEY, { type: "json" });
+  return Array.isArray(data) ? data.filter((entry) => Number.isFinite(Number(entry))) : [];
+}
+
+async function canConsumeNimRequestSlot(store, nowMs = Date.now()) {
+  const requests = await readNimRequestTimestamps(store);
+  const cutoff = nowMs - NIM_RATE_WINDOW_MS;
+  const inWindow = requests.filter((ts) => Number(ts) >= cutoff);
+
+  if (inWindow.length >= NIM_RATE_LIMIT_PER_WINDOW) {
+    const oldest = Math.min(...inWindow);
+    return {
+      allowed: false,
+      inWindowCount: inWindow.length,
+      retryAfterMs: Math.max(0, NIM_RATE_WINDOW_MS - (nowMs - oldest)),
+    };
+  }
+
+  inWindow.push(nowMs);
+  await store.setJSON(NIM_REQUEST_TRACKING_KEY, inWindow.sort((a, b) => a - b));
+  return { allowed: true, inWindowCount: inWindow.length, retryAfterMs: 0 };
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
+}
+
+function normalizeIdentityName(value) {
+  return String(value || "").trim();
+}
+
+function normalizeIdentityEmail(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || !isValidEmail(normalized)) return "";
+  return normalized;
+}
+
 async function readPendingChanges(store) {
   const data = await store.get(PENDING_CHANGES_KEY, { type: "json" });
-  return Array.isArray(data) ? data : [];
+  const list = Array.isArray(data) ? data : [];
+  const visible = filterVisiblePendingChanges(list);
+
+  if (visible.length !== list.length) {
+    await writePendingChanges(store, visible);
+  }
+  return visible;
 }
 
 async function writePendingChanges(store, pendingChanges) {
@@ -194,23 +326,31 @@ async function updateUserIdentity(store, userId, payload) {
 
 async function listTodayUsage(store) {
   const prefix = `usage:${new Date().toISOString().slice(0, 10)}:`;
-  const [identityMap, listing] = await Promise.all([
+  const [identityMap, settings, limits, listing] = await Promise.all([
     readUserIdentityMap(store),
+    getUsageSettings(store),
+    readUserDailyLimits(store),
     store.list({ prefix }),
   ]);
+
   const blobs = listing?.blobs || [];
+  const defaultLimit = normalizeUsageLimit(settings?.defaultDailyPromptLimit, DEFAULT_DAILY_PROMPT_LIMIT);
   const results = [];
+
   for (const blob of blobs) {
     const data = await store.get(blob.key, { type: "json" });
     const userId = blob.key.slice(prefix.length);
     const identity = identityMap[userId];
+    const limit = normalizeUsageLimit(limits[userId], defaultLimit);
     results.push({
       userId,
       userEmail: data?.userEmail || identity?.email || identity?.firstSeenEmail || null,
       count: data?.count ?? 0,
       maintainerNotified: data?.maintainerNotified ?? false,
+      limit,
     });
   }
+
   return results;
 }
 
@@ -245,6 +385,14 @@ module.exports = {
   writeExceptions,
   readUsage,
   writeUsage,
+  getUsageSettings,
+  writeUsageSettings,
+  getUserPromptLimit,
+  setUserPromptLimit,
+  resetUserPromptLimit,
+  resetUserUsage,
+  resetAllUsage,
+  canConsumeNimRequestSlot,
   readApprovalSettings,
   writeApprovalSettings,
   readPendingChanges,
@@ -260,4 +408,6 @@ module.exports = {
   jsonResponse,
   nextId,
   timesOverlap,
+  NIM_RATE_LIMIT_PER_WINDOW,
+  NIM_RATE_WINDOW_MS,
 };

@@ -162,6 +162,23 @@
   }
   .identity-table th { background: #f0f2f5; color: var(--muted); font-size: 0.78rem; }
   .identity-table tr:last-child td { border-bottom: none; }
+
+  .usage-table input[type="number"] {
+    width: 70px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 0.78rem;
+  }
+  .usage-table .inline-btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 4px;
+    padding: 4px 7px;
+    font-size: 0.74rem;
+    margin-right: 5px;
+    cursor: pointer;
+  }
   .identity-table input[type="text"],
   .identity-table input[type="email"] {
     width: 100%;
@@ -385,10 +402,22 @@
     <h2 class="section-heading">Today's assistant usage</h2>
     <table class="usage-table" id="usage-table">
       <thead>
-        <tr><th>User</th><th>Prompts used</th><th>Maintainer notified</th></tr>
+        <tr><th>User</th><th>Prompts</th><th>Limit</th><th>Maintainer notified</th><th>Actions</th></tr>
       </thead>
       <tbody id="usage-tbody"></tbody>
     </table>
+    <div class="settings-form" style="margin-bottom:24px;">
+      <div class="row">
+        <div>
+          <label for="default-limit">Default daily prompt limit</label>
+          <input id="default-limit" type="number" min="0" step="1" value="5" />
+        </div>
+        <div>
+          <button id="save-default-limit" type="button">Save default limit</button>
+          <button id="reset-all-usage-btn" type="button">Reset all usage</button>
+        </div>
+      </div>
+    </div>
 
     <h2 class="section-heading">Linked user identities</h2>
     <table class="identity-table" id="identity-table">
@@ -568,6 +597,7 @@ function formatActionType(action) {
   if (action.action === "add") return "Add";
   if (action.action === "cancel") return "Cancel occurrence";
   if (action.action === "delete") return "Delete recurring";
+  if (action.action === "reschedule") return "Reschedule";
   return action.action;
 }
 
@@ -584,7 +614,60 @@ function formatChangeDetails(action) {
   if (action.action === "cancel") {
     return `lesson #${action.lesson_id} on ${action.specific_date || "N/A"}`;
   }
+  if (action.action === "reschedule") {
+    return `lesson #${action.lesson_id || "?"} -> ${action.start_time || "N/A"}-${action.end_time || "N/A"}`;
+  }
   return "";
+}
+
+function renderUsageRows(usageData, usageSettings) {
+  const usageRows = document.getElementById("usage-tbody");
+  usageRows.innerHTML = "";
+  if (!usageData || usageData.length === 0) {
+    usageRows.innerHTML = `<tr><td colspan="5" class="empty">No assistant activity yet today</td></tr>`;
+    return;
+  }
+
+  usageData.forEach((u) => {
+    const userId = escapeHtml(u.userId || "");
+    const row = document.createElement("tr");
+    const limit = Number(u.limit ?? (usageSettings?.defaultDailyPromptLimit ?? 5));
+    row.innerHTML = `
+      <td>${escapeHtml(u.userEmail || u.userId || "unmapped-user")}</td>
+      <td>${u.count} / ${limit}</td>
+      <td>${limit}</td>
+      <td>${u.maintainerNotified ? "Yes" : "No"}</td>
+      <td>
+        <input class="user-limit-input" type="number" min="0" step="1" value="${limit}" data-user-id="${userId}" />
+        <button type="button" class="inline-btn" data-op="set_user_limit" data-user-id="${userId}">Set limit</button>
+        <button type="button" class="inline-btn" data-op="reset_user_limit" data-user-id="${userId}">Use default</button>
+        <button type="button" class="inline-btn" data-op="reset_user_usage" data-user-id="${userId}">Reset usage</button>
+      </td>
+    `;
+    usageRows.appendChild(row);
+  });
+
+  usageRows.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = btn.dataset.userId || "";
+      const op = btn.dataset.op;
+      const payload = { operation: op, userId };
+      try {
+        if (op === "set_user_limit") {
+          const input = usageRows.querySelector(`.user-limit-input[data-user-id="${userId}"]`);
+          payload.promptLimit = Number(input ? input.value : 0);
+        }
+        await adminFetch("/api/admin-lessons", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        refreshAll();
+      } catch (err) {
+        showError(`Couldn't update limit for ${userId || "user"}: ${err.message}`);
+      }
+    });
+  });
 }
 
 async function adminFetch(url, options = {}) {
@@ -891,7 +974,7 @@ function renderCalendarData(data) {
         const card = document.createElement("div");
         card.className = "lesson-card";
         card.innerHTML = `
-          <button class="del-btn" title="Delete" data-id="${l.id}">✕</button>
+          <button class="del-btn" title="Delete" data-id="${l.id}">x</button>
           <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
           <span class="student">${escapeHtml(l.student)}</span>
           ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
@@ -933,23 +1016,14 @@ async function refreshAll() {
     `;
 
     const usageRows = document.getElementById("usage-tbody");
-    usageRows.innerHTML = "";
-    if (!usageData.usage || usageData.usage.length === 0) {
-      usageRows.innerHTML = `<tr><td colspan="3" class="empty">No assistant activity yet today</td></tr>`;
-    } else {
-      usageData.usage.forEach((u) => {
-        const row = document.createElement("tr");
-        row.innerHTML = `
-        <td>${escapeHtml(u.userEmail || "unmapped-user")}</td>
-          <td>${u.count} / 5</td>
-          <td>${u.maintainerNotified ? "Yes" : "No"}</td>
-        `;
-        usageRows.appendChild(row);
-      });
-    }
+    renderUsageRows(usageData.usage || [], adminData.usageSettings);
 
     renderCalendarData(adminData);
     renderApprovalSection(adminData);
+    const defaultLimitInput = document.getElementById("default-limit");
+    if (defaultLimitInput) {
+      defaultLimitInput.value = Number(adminData?.usageSettings?.defaultDailyPromptLimit ?? 5);
+    }
     renderIdentityRows(adminData.userIdentities || []);
     renderPendingRows(adminData.pendingChanges || []);
     updatePendingToggleUI();
@@ -1002,6 +1076,39 @@ document.getElementById("save-approval-settings").addEventListener("click", asyn
     refreshAll();
   } catch (err) {
     showError(`Couldn't save approval settings: ${err.message}`);
+  }
+});
+
+document.getElementById("save-default-limit").addEventListener("click", async () => {
+  const defaultInput = document.getElementById("default-limit");
+  const defaultLimit = Number(defaultInput ? defaultInput.value : 5);
+  if (!Number.isFinite(defaultLimit) || defaultLimit < 0) {
+    showError("Default daily limit must be 0 or more.");
+    return;
+  }
+  try {
+    await adminFetch("/api/admin-lessons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "set_default_limit", defaultDailyPromptLimit: defaultLimit }),
+    });
+    refreshAll();
+  } catch (err) {
+    showError(`Couldn't update default limit: ${err.message}`);
+  }
+});
+
+document.getElementById("reset-all-usage-btn").addEventListener("click", async () => {
+  if (!confirm("Reset usage counters for all users?")) return;
+  try {
+    await adminFetch("/api/admin-lessons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "reset_all_usage" }),
+    });
+    refreshAll();
+  } catch (err) {
+    showError(`Couldn't reset all usage: ${err.message}`);
   }
 });
 

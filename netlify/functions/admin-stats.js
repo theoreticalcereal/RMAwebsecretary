@@ -16,11 +16,13 @@ exports.handler = async (event) => {
     const store = getLessonStore(event);
     const usage = await listTodayUsage(store);
     const totalPromptsToday = usage.reduce((sum, u) => sum + u.count, 0);
-    const usersAtLimit = usage.filter((u) => u.count >= 5).length;
+    const usersAtLimit = usage.filter((u) => u.count >= (u.limit ?? 0)).length;
+
+    const totalUsersWithLimit = usage.length;
 
     return jsonResponse(200, {
       date: new Date().toISOString().slice(0, 10),
-      totalVisitorsToday: usage.length,
+      totalVisitorsToday: totalUsersWithLimit,
       totalPromptsToday,
       visitorsAtLimit: usersAtLimit,
       usage,

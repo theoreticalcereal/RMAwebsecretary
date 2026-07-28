@@ -1,4 +1,3 @@
-
 const {
   getLessonStore,
   readLessons,
@@ -13,6 +12,10 @@ const {
   recordUserIdentity,
   readUsage,
   writeUsage,
+  getUserPromptLimit,
+  canConsumeNimRequestSlot,
+  NIM_RATE_LIMIT_PER_WINDOW,
+  NIM_RATE_WINDOW_MS,
   jsonResponse,
   nextId,
   timesOverlap,
@@ -22,8 +25,6 @@ const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NIM_MODEL = "meta/llama-3.1-70b-instruct";
-
-const DAILY_PROMPT_LIMIT = 5;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAY_NAME_TO_INDEX = {
@@ -42,12 +43,14 @@ Today's date is ${new Date().toISOString().slice(0, 10)}.
 
 The JSON must have this shape:
 {
-  "action": "add" | "cancel" | "delete" | "query" | "unknown",
+  "action": "add" | "cancel" | "delete" | "reschedule" | "query" | "unknown",
   "student": string or null,
   "subject": string or null,
   "day_of_week": integer 0-6 (Monday=0, Sunday=6) or null,
   "start_time": "HH:MM" (24-hour) or null,
   "end_time": "HH:MM" (24-hour) or null,
+  "old_start_time": "HH:MM" (24-hour) or null,
+  "old_end_time": "HH:MM" (24-hour) or null,
   "recurring": true or false,
   "specific_date": "YYYY-MM-DD" or null,
   "lesson_id": integer or null,
@@ -58,6 +61,7 @@ Rules:
 - "add" means create a new lesson (recurring weekly unless the user specifies a one-off date).
 - "cancel" means cancel a single upcoming occurrence of an existing recurring lesson (needs lesson_id and specific_date if you can determine them from context; otherwise set action to "unknown" and ask in "reply").
 - "delete" means remove a recurring lesson entirely.
+- "reschedule" means adjust an existing lesson's times. Use lesson_id if possible, otherwise include subject/student.
 - "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful answer using the CURRENT LESSONS provided below, action "query".
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.`;
@@ -76,7 +80,19 @@ function parseDateAndTime(specificDate, startTime) {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
-function nextOccurenceOnOrAfter(date, dayIndex, timeHHMM) {
+function parseDayFromMessage(message) {
+  const match = String(message || "").match(
+    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
+  );
+  if (!match) return null;
+  return DAY_NAME_TO_INDEX[match[1].toLowerCase()];
+}
+
+function normalizeName(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function nextOccurrenceOnOrAfter(date, dayIndex, timeHHMM) {
   const [hour, minute] = timeHHMM.split(":").map(Number);
   if ([dayIndex, hour, minute].some((v) => Number.isNaN(v))) return null;
   const now = date ? new Date(date) : new Date();
@@ -96,16 +112,18 @@ function nextOccurenceOnOrAfter(date, dayIndex, timeHHMM) {
 
 function extractReasonFromMessage(message) {
   const raw = String(message || "").trim();
-  const match = raw.match(/\b(?:because|reason|reasoning)\b\s*:\s*(.+)$/i)
-    || raw.match(/\b(?:because|since|due to|as a result of)\b\s+(.+)$/i);
+  const match =
+    raw.match(/\b(?:because|reason|reasoning)\b\s*:\s*(.+)$/i) ||
+    raw.match(/\b(?:because|since|due to|as a result of)\b\s+(.+)$/i);
   if (!match) return "";
   return match[1].trim();
 }
 
-function findPotentialConflict(lessons, action) {
+function findPotentialConflict(lessons, action, excludeLessonId) {
   return lessons.find(
     (l) =>
       l.active !== false &&
+      l.id !== excludeLessonId &&
       l.day_of_week === action.day_of_week &&
       timesOverlap(l.start_time, l.end_time, action.start_time, action.end_time)
   );
@@ -114,11 +132,11 @@ function findPotentialConflict(lessons, action) {
 function meetsReasonRules(rawReason, settings) {
   if (!settings.auto.requireReason) return { ok: true, reason: rawReason };
   const reason = (rawReason || "").trim();
-  if (!reason) return { ok: false, issue: "A valid reason is required before auto-approving." };
+  if (!reason) return { ok: false, issue: "A valid reason is required before automatic approval." };
   if (reason.length < settings.auto.minReasonLength) {
     return {
       ok: false,
-      issue: `The reason must be at least ${settings.auto.minReasonLength} characters long before auto-approving.`,
+      issue: `The reason must be at least ${settings.auto.minReasonLength} characters long before automatic approval.`,
     };
   }
   return { ok: true, reason };
@@ -127,6 +145,32 @@ function meetsReasonRules(rawReason, settings) {
 function minutesUntil(targetDate, now = nowInMs()) {
   if (!targetDate) return Number.POSITIVE_INFINITY;
   return (new Date(targetDate).getTime() - now) / (60 * 60 * 1000);
+}
+
+function toMinutes(hhmm) {
+  const [h, m] = String(hhmm || "").split(":").map(Number);
+  if ([h, m].some((v) => Number.isNaN(v))) return null;
+  return h * 60 + m;
+}
+
+function addMinutesToTime(hhmm, addMinutes) {
+  const base = toMinutes(hhmm);
+  if (base === null || !Number.isFinite(addMinutes)) return null;
+  let total = base + addMinutes;
+  total = ((total % (24 * 60)) + 24 * 60) % (24 * 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function isNoopMessage(message) {
+  const lower = String(message || "").toLowerCase();
+  return /\b(hi|hello|hey|thanks|thank you|okay|ok)\b/.test(lower);
+}
+
+function isLikelyQuery(message) {
+  const lower = String(message || "").toLowerCase();
+  return /\b(what|when|who|schedule|calendar|lessons|lesson|show|list)\b/.test(lower);
 }
 
 function canAutoApprove(changeAction, pendingRequestMessage, settings, lessons) {
@@ -140,7 +184,7 @@ function canAutoApprove(changeAction, pendingRequestMessage, settings, lessons) 
   }
 
   if (changeAction.action === "add") {
-    const nextOccurrence = nextOccurenceOnOrAfter(new Date(), changeAction.day_of_week, changeAction.start_time);
+    const nextOccurrence = nextOccurrenceOnOrAfter(new Date(), changeAction.day_of_week, changeAction.start_time);
     if (minutesUntil(nextOccurrence) < minHoursBefore) {
       return {
         ok: false,
@@ -155,7 +199,7 @@ function canAutoApprove(changeAction, pendingRequestMessage, settings, lessons) 
   if (changeAction.action === "delete") {
     const lesson = lessons.find((l) => l.id === changeAction.lesson_id);
     if (!lesson) return { ok: false, autoRejected: true, reason: "Unknown lesson id.", requiredAction: "manual_review" };
-    const nextOccurrence = nextOccurenceOnOrAfter(new Date(), lesson.day_of_week, lesson.start_time);
+    const nextOccurrence = nextOccurrenceOnOrAfter(new Date(), lesson.day_of_week, lesson.start_time);
     if (minutesUntil(nextOccurrence) < minHoursBefore) {
       return {
         ok: false,
@@ -173,13 +217,46 @@ function canAutoApprove(changeAction, pendingRequestMessage, settings, lessons) 
 
     const cancelDate = parseDateAndTime(changeAction.specific_date, lesson.start_time);
     if (!cancelDate) {
-      return { ok: false, autoRejected: true, reason: "Specific date is missing or invalid.", requiredAction: "manual_review" };
+      return {
+        ok: false,
+        autoRejected: true,
+        reason: "Specific date is missing or invalid.",
+        requiredAction: "manual_review",
+      };
     }
     if (minutesUntil(cancelDate) < minHoursBefore) {
       return {
         ok: false,
         autoRejected: true,
         reason: `That occurrence starts in less than ${minHoursBefore} hour(s).`,
+        requiredAction: "manual_review",
+      };
+    }
+    return { ok: true, autoRejected: false };
+  }
+
+  if (changeAction.action === "reschedule") {
+    if (!changeAction.lesson_id) return { ok: false, autoRejected: true, reason: "Could not identify the lesson to reschedule.", requiredAction: "manual_review" };
+
+    const lesson = lessons.find((l) => l.id === changeAction.lesson_id);
+    if (!lesson) return { ok: false, autoRejected: true, reason: "Unknown lesson id.", requiredAction: "manual_review" };
+
+    const checkDate =
+      parseDateAndTime(changeAction.specific_date, changeAction.start_time) ||
+      nextOccurrenceOnOrAfter(new Date(), changeAction.day_of_week ?? lesson.day_of_week, changeAction.start_time);
+    if (!checkDate) {
+      return {
+        ok: false,
+        autoRejected: true,
+        reason: "Could not determine when this lesson starts.",
+        requiredAction: "manual_review",
+      };
+    }
+    if (minutesUntil(checkDate) < minHoursBefore) {
+      return {
+        ok: false,
+        autoRejected: true,
+        reason: `That lesson starts in less than ${minHoursBefore} hour(s).`,
         requiredAction: "manual_review",
       };
     }
@@ -221,7 +298,40 @@ function createAutoRejectResponse(action, reason, pending) {
   };
 }
 
+function findLessonByContext(lessons, action) {
+  if (!action) return null;
+  if (action.lesson_id) return lessons.find((l) => l.id === action.lesson_id);
+
+  const subject = normalizeName(action.subject);
+  const student = normalizeName(action.student);
+
+  const candidatePool = lessons.filter((l) => l.active !== false);
+  let matches = candidatePool;
+
+  if (subject) {
+    matches = matches.filter((l) => {
+      const s = normalizeName(l.subject);
+      return s === subject || s.includes(subject) || subject.includes(s);
+    });
+  }
+
+  if (student) {
+    matches = matches.filter((l) => {
+      const n = normalizeName(l.student);
+      return n === student || n.includes(student) || student.includes(n);
+    });
+  }
+
+  if (matches.length === 1) return matches[0];
+  return null;
+}
+
 async function applyActionOrQueue(store, action, userMessage, userId, lessons, settings, reasonText, userEmail) {
+  if (!action.lesson_id && (action.action === "cancel" || action.action === "reschedule")) {
+    const lessonFromContext = findLessonByContext(lessons, action);
+    if (lessonFromContext) action.lesson_id = lessonFromContext.id;
+  }
+
   if (settings.mode === "manual") {
     const pending = await queuePendingChange(store, action, reasonText, userId, userMessage, userEmail);
     return createAutoRejectResponse(action, "This request has been queued for manual review.", pending);
@@ -238,13 +348,13 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
   }
 
   if (action.action === "add") {
-    const conflict = findPotentialConflict(lessons, action);
+    const conflict = findPotentialConflict(lessons, action, null);
     if (conflict) {
       return {
         action: {
           ...cloneAction(action),
           action: "unknown",
-          reply: `That conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
+          reply: `Conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
         },
         applied: false,
       };
@@ -291,7 +401,64 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
     return { action, applied: true, exception };
   }
 
-  return { action, applied: false };
+  if (action.action === "reschedule") {
+    const lessonIdx = lessons.findIndex((l) => l.id === action.lesson_id && l.active !== false);
+    if (lessonIdx === -1) {
+      return {
+        action: { ...cloneAction(action), action: "unknown", reply: "I couldn't find that lesson." },
+        applied: false,
+      };
+    }
+
+    const existing = lessons[lessonIdx];
+    const originalStart = action.start_time || existing.start_time;
+    const originalDuration = toMinutes(existing.end_time) - toMinutes(existing.start_time);
+    const derivedEnd = action.end_time || addMinutesToTime(originalStart, Number.isFinite(originalDuration) ? originalDuration : 60);
+    if (!originalStart || !derivedEnd) {
+      return {
+        action: {
+          ...cloneAction(action),
+          action: "unknown",
+          reply: "I need both a new start and end time to reschedule.",
+        },
+        applied: false,
+      };
+    }
+
+    const conflict = findPotentialConflict(
+      lessons,
+      { ...action, start_time: originalStart, end_time: derivedEnd },
+      action.lesson_id
+    );
+    if (conflict) {
+      return {
+        action: {
+          ...cloneAction(action),
+          action: "unknown",
+          reply: `That conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
+        },
+        applied: false,
+      };
+    }
+
+    lessons[lessonIdx] = {
+      ...existing,
+      student: action.student || existing.student,
+      subject: action.subject || existing.subject,
+      day_of_week: action.day_of_week ?? existing.day_of_week,
+      start_time: originalStart,
+      end_time: derivedEnd,
+      recurring: action.recurring ?? existing.recurring,
+      specific_date: existing.specific_date,
+    };
+    await writeLessons(store, lessons);
+    return { action: { ...cloneAction(action), end_time: derivedEnd }, applied: true, lesson: lessons[lessonIdx] };
+  }
+
+  return {
+    action,
+    applied: false,
+  };
 }
 
 function parseTo24Hour(hour, minute, meridian) {
@@ -337,13 +504,10 @@ function parseSimpleAddRequest(message) {
   const endTime = parseTo24Hour(timeMatch[4], timeMatch[5], endPeriod);
   if (!startTime || !endTime) return null;
 
-  if (startTime >= endTime) return null;
+  const dayOfWeek = parseDayFromMessage(lower);
+  if (dayOfWeek === null) return null;
 
-  const dayMatch = lower.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
-  if (!dayMatch) return null;
-  const dayOfWeek = DAY_NAME_TO_INDEX[dayMatch[1].toLowerCase()];
-
-  const schedulePattern = /\b(?:schedule|add|book|create)\s+(.+?)\s+(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:from|between|on|at)\b|$)/i;
+  const schedulePattern = /\b(?:schedule|add|book|create)\s+(.+?)\s+(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:from|between)\b|$)/i;
   const subjectStudentMatch = normalized.match(schedulePattern);
 
   let subject = "Unnamed";
@@ -352,7 +516,6 @@ function parseSimpleAddRequest(message) {
     subject = (subjectStudentMatch[1] || "").trim() || subject;
     student = (subjectStudentMatch[2] || "").replace(/\s+(from|between)\b.*$/i, "").trim() || student;
   }
-
   if (student.toLowerCase() === "me" || student.toLowerCase() === "the student") student = "Unknown";
 
   return {
@@ -362,17 +525,109 @@ function parseSimpleAddRequest(message) {
     day_of_week: dayOfWeek,
     start_time: startTime,
     end_time: endTime,
+    old_start_time: null,
+    old_end_time: null,
     recurring: true,
     specific_date: null,
     lesson_id: null,
-    reply: `Got it — scheduling ${subject || "a lesson"} with ${student} on ${DAY_NAMES[dayOfWeek]} ${startTime}-${endTime}.`,
+    reply: `Got it. ${subject || "a lesson"} with ${student} on ${DAY_NAMES[dayOfWeek]} ${startTime}-${endTime}.`,
   };
+}
+
+function parseSimpleRescheduleRequest(message) {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  if (!/\b(reschedule|move|shift|postpone|change)\b/.test(lower)) return null;
+
+  const dayOfWeek = parseDayFromMessage(lower);
+  const specificDate = normalized.match(/\b(\d{4}-\d{2}-\d{2})\b/i)?.[1] || null;
+
+  const timeMatches = [...normalized.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/gi)];
+  if (timeMatches.length < 2) return null;
+
+  const beforeMatch = timeMatches[0];
+  const afterMatch = timeMatches[1];
+  const oldStartTime = parseTo24Hour(beforeMatch[1], beforeMatch[2], beforeMatch[3]);
+  const newStartTime = parseTo24Hour(afterMatch[1], afterMatch[2], afterMatch[3]);
+  if (!oldStartTime || !newStartTime) return null;
+
+  const subjectMatch = normalized.match(/\b(?:reschedule|move|shift|postpone|change)\s+([a-zA-Z][a-zA-Z'’.\- ]{1,40})\s+(?:with|for)/i);
+  const studentMatch = normalized.match(/\b(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:on|at|from|to|for|between|until)\b|$)/i);
+  const lessonIdMatch = normalized.match(/\b(?:lesson\s*)?(?:id)?\s*(\d+)\b/i);
+
+  return {
+    action: "reschedule",
+    student: studentMatch ? studentMatch[1].trim() : "",
+    subject: subjectMatch ? subjectMatch[1].trim() : "",
+    day_of_week: dayOfWeek,
+    start_time: newStartTime,
+    end_time: null,
+    old_start_time: oldStartTime,
+    old_end_time: null,
+    recurring: true,
+    specific_date: specificDate,
+    lesson_id: lessonIdMatch ? Number(lessonIdMatch[1]) : null,
+    reply: `Got it. Rescheduling ${subjectMatch ? subjectMatch[1] : "that lesson"} to ${newStartTime}.`,
+  };
+}
+
+function parseQuickCancelRequest(message) {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  if (!/\b(cancel|remove|delete)\b/.test(lower)) return null;
+
+  const lessonIdMatch = lower.match(/\blesson\s*(?:id)?\s*(\d+)\b/i);
+  const subjectMatch = normalized.match(/\b(?:cancel|remove|delete)\s+(?:lesson)?\s*([a-zA-Z][a-zA-Z'’.\- ]{1,40})?/i);
+  const nameMatch = normalized.match(/\b(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:on|at|from|to|between|until|for|that|the)\b|$)/i);
+  const specificDate = normalized.match(/\b(\d{4}-\d{2}-\d{2})\b/i)?.[1] || null;
+  const dayOfWeek = parseDayFromMessage(lower);
+
+  return {
+    action: "cancel",
+    student: nameMatch ? nameMatch[1].trim() : "",
+    subject: subjectMatch ? subjectMatch[1].trim() : "",
+    day_of_week: dayOfWeek,
+    start_time: null,
+    end_time: null,
+    old_start_time: null,
+    old_end_time: null,
+    recurring: true,
+    specific_date: specificDate,
+    lesson_id: lessonIdMatch ? Number(lessonIdMatch[1]) : null,
+    reply: "Got it. I can queue that cancellation for review.",
+  };
+}
+
+function parseQuickQuery(message) {
+  const lower = String(message || "").toLowerCase();
+  if (isNoopMessage(lower) || /\b(what|when|who|list|show)\b/.test(lower)) {
+    return {
+      action: "query",
+      student: null,
+      subject: null,
+      day_of_week: null,
+      start_time: null,
+      end_time: null,
+      old_start_time: null,
+      old_end_time: null,
+      recurring: true,
+      specific_date: null,
+      lesson_id: null,
+      reply: "I can help with the schedule. Ask me to add, cancel, or reschedule a lesson.",
+    };
+  }
+  return null;
 }
 
 async function callNim(apiKey, userMessage, lessons) {
   const lessonsSummary = lessons
     .filter((l) => l.active !== false)
-    .map((l) => `id=${l.id} ${l.student} (${l.subject || "no subject"}) ${DAY_NAMES[l.day_of_week]} ${l.start_time}-${l.end_time}${l.recurring ? " [weekly]" : ` [one-off ${l.specific_date}]`}`)
+    .map(
+      (l) =>
+        `id=${l.id} ${l.student} (${l.subject || "no subject"}) ${DAY_NAMES[l.day_of_week]} ${l.start_time}-${l.end_time}${
+          l.recurring ? " [weekly]" : ` [one-off ${l.specific_date}]`
+        }`
+    )
     .join("\n") || "(no lessons scheduled yet)";
 
   let res;
@@ -413,6 +668,11 @@ async function callNim(apiKey, userMessage, lessons) {
   }
 }
 
+function formatRateLimitMessage(retryAfterMs) {
+  const waitMinutes = Math.max(1, Math.ceil((retryAfterMs || 0) / 1000 / 60));
+  return `AI request throttled. Retry in about ${waitMinutes} minute(s).`;
+}
+
 exports.handler = async (event) => {
   const user = await getSession(event);
   if (!user) {
@@ -425,20 +685,22 @@ exports.handler = async (event) => {
 async function innerHandler(event, user) {
   const userId = user.id || user.email;
   const userEmail = user.email;
+
   if (event.httpMethod === "GET") {
     try {
       const store = getLessonStore(event);
       await recordUserIdentity(store, userId, userEmail);
-      const [usage, pendingChanges] = await Promise.all([
+      const [usage, pendingChanges, userLimit] = await Promise.all([
         readUsage(store, userId),
         readPendingChanges(store),
+        getUserPromptLimit(store, userId),
       ]);
       const requests = filterPendingChangesForUser(pendingChanges, userId, userEmail);
       return jsonResponse(200, {
-        limit: DAILY_PROMPT_LIMIT,
+        limit: userLimit,
         used: usage.count,
-        remaining: Math.max(0, DAILY_PROMPT_LIMIT - usage.count),
-        limitReached: usage.count >= DAILY_PROMPT_LIMIT,
+        remaining: Math.max(0, userLimit - usage.count),
+        limitReached: usage.count >= userLimit,
         requests,
         requestRetentionHours: RESOLVED_REQUEST_TTL_HOURS,
       });
@@ -465,13 +727,14 @@ async function innerHandler(event, user) {
     const store = getLessonStore(event);
     await recordUserIdentity(store, userId, userEmail);
 
-    const [usage, lessons, approvalSettings] = await Promise.all([
+    const [usage, lessons, approvalSettings, userLimit] = await Promise.all([
       readUsage(store, userId),
       readLessons(store),
       readApprovalSettings(store),
+      getUserPromptLimit(store, userId),
     ]);
 
-    if (usage.count >= DAILY_PROMPT_LIMIT) {
+    if (usage.count >= userLimit) {
       if (!usage.maintainerNotified) {
         await notifyMaintainer({
           promptCount: usage.count,
@@ -487,21 +750,48 @@ async function innerHandler(event, user) {
       return jsonResponse(200, {
         action: {
           action: "limit_reached",
-          reply: "I can't help with any more requests today. I've reached my daily limit. The maintainer has been notified, please reach out to them directly, or try again tomorrow.",
+          reply:
+            "Daily limit reached. I can't take more requests today. The maintainer has been notified, try again tomorrow.",
         },
         applied: false,
         limitReached: true,
+        limit: userLimit,
+        used: usage.count,
+        remaining: 0,
       });
     }
 
     const nextUsage = { ...usage, userEmail, count: usage.count + 1 };
-    const fastAction = parseSimpleAddRequest(body.message);
+    const quickQuery = parseQuickQuery(body.message);
+    const fastAdd = parseSimpleAddRequest(body.message);
+    const fastReschedule = parseSimpleRescheduleRequest(body.message);
+    const fastCancel = parseQuickCancelRequest(body.message);
+    const fastAction = fastAdd || fastCancel || fastReschedule || quickQuery;
+
     if (fastAction) {
       await writeUsage(store, userId, nextUsage);
-      const action = fastAction;
-      if (action.day_of_week === null || action.day_of_week === undefined || !action.start_time || !action.end_time) {
+
+      if (fastAction.action === "add") {
+        if (fastAction.day_of_week === null || fastAction.day_of_week === undefined || !fastAction.start_time || !fastAction.end_time) {
+          return jsonResponse(200, {
+            action: { ...fastAction, action: "unknown", reply: "I need a day and start/end time to add this lesson." },
+            applied: false,
+          });
+        }
+      }
+
+      if (fastAction.action === "reschedule") {
+        if (!fastAction.start_time) {
+          return jsonResponse(200, {
+            action: { ...fastAction, action: "unknown", reply: "I need a new start time to reschedule." },
+            applied: false,
+          });
+        }
+      }
+
+      if (fastAction.action === "cancel" && !fastAction.lesson_id && !fastAction.student && !fastAction.subject) {
         return jsonResponse(200, {
-          action: { ...action, action: "unknown", reply: "I need a day and start/end time to add this lesson." },
+          action: { ...fastAction, action: "unknown", reply: "Which lesson should I cancel?" },
           applied: false,
         });
       }
@@ -509,7 +799,7 @@ async function innerHandler(event, user) {
       const reason = extractReasonFromMessage(body.message);
       const result = await applyActionOrQueue(
         store,
-        action,
+        fastAction,
         body.message,
         userId,
         lessons,
@@ -518,6 +808,23 @@ async function innerHandler(event, user) {
         userEmail
       );
       return jsonResponse(result.applied ? 201 : 200, result);
+    }
+
+    const rateSlot = await canConsumeNimRequestSlot(store, nowInMs());
+    if (!rateSlot.allowed) {
+      return jsonResponse(429, {
+        action: {
+          action: "query",
+          reply: formatRateLimitMessage(rateSlot.retryAfterMs),
+        },
+        applied: false,
+        rateLimited: true,
+        rateLimit: {
+          limitPerMinute: NIM_RATE_LIMIT_PER_WINDOW,
+          windowMs: NIM_RATE_WINDOW_MS,
+          retryAfterMs: rateSlot.retryAfterMs,
+        },
+      });
     }
 
     const apiKey = process.env.NVIDIA_NIM_API_KEY;
@@ -527,7 +834,7 @@ async function innerHandler(event, user) {
     const action = await callNim(apiKey, body.message, lessons);
 
     if (action.action === "query" || action.action === "unknown" || !action.action) {
-      return jsonResponse(200, { action, applied: false });
+      return jsonResponse(200, { action, applied: false, limit: userLimit, used: nextUsage.count });
     }
 
     if (action.action === "add") {
@@ -535,9 +842,10 @@ async function innerHandler(event, user) {
         return jsonResponse(200, {
           action: { ...action, action: "unknown", reply: "I need a day and start/end time to add this lesson." },
           applied: false,
+          limit: userLimit,
+          used: nextUsage.count,
         });
       }
-
       const reason = extractReasonFromMessage(body.message);
       const result = await applyActionOrQueue(
         store,
@@ -549,7 +857,7 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 201 : 200, result);
+      return jsonResponse(result.applied ? 201 : 200, { ...result, limit: userLimit, used: nextUsage.count });
     }
 
     if (action.action === "delete") {
@@ -557,9 +865,10 @@ async function innerHandler(event, user) {
         return jsonResponse(200, {
           action: { ...action, action: "unknown", reply: "Which lesson should I delete? Please specify." },
           applied: false,
+          limit: userLimit,
+          used: nextUsage.count,
         });
       }
-
       const reason = extractReasonFromMessage(body.message);
       const result = await applyActionOrQueue(
         store,
@@ -571,7 +880,7 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 200 : 200, result);
+      return jsonResponse(result.applied ? 200 : 200, { ...result, limit: userLimit, used: nextUsage.count });
     }
 
     if (action.action === "cancel") {
@@ -579,6 +888,8 @@ async function innerHandler(event, user) {
         return jsonResponse(200, {
           action: { ...action, action: "unknown", reply: "Which lesson, and which date, should I cancel?" },
           applied: false,
+          limit: userLimit,
+          used: nextUsage.count,
         });
       }
       const reason = extractReasonFromMessage(body.message);
@@ -592,10 +903,43 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 201 : 200, result);
+      return jsonResponse(result.applied ? 201 : 200, { ...result, limit: userLimit, used: nextUsage.count });
     }
 
-    return jsonResponse(200, { action, applied: false });
+    if (action.action === "reschedule") {
+      if (!action.lesson_id && !action.student && !action.subject) {
+        return jsonResponse(200, {
+          action: { ...action, action: "unknown", reply: "I need the lesson subject/student to reschedule." },
+          applied: false,
+          limit: userLimit,
+          used: nextUsage.count,
+        });
+      }
+
+      if (!action.start_time) {
+        return jsonResponse(200, {
+          action: { ...action, action: "unknown", reply: "I need a new start time to reschedule." },
+          applied: false,
+          limit: userLimit,
+          used: nextUsage.count,
+        });
+      }
+
+      const reason = extractReasonFromMessage(body.message);
+      const result = await applyActionOrQueue(
+        store,
+        action,
+        body.message,
+        userId,
+        lessons,
+        approvalSettings,
+        reason,
+        userEmail
+      );
+      return jsonResponse(result.applied ? 201 : 200, { ...result, limit: userLimit, used: nextUsage.count });
+    }
+
+    return jsonResponse(200, { action, applied: false, limit: userLimit, used: nextUsage.count });
   } catch (err) {
     console.error(err);
     return jsonResponse(500, { error: "internal error", detail: String(err.message || err) });

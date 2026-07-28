@@ -5,6 +5,12 @@ const {
   writeLessons,
   readExceptions,
   writeExceptions,
+  getUsageSettings,
+  writeUsageSettings,
+  setUserPromptLimit,
+  resetUserPromptLimit,
+  resetUserUsage,
+  resetAllUsage,
   readApprovalSettings,
   writeApprovalSettings,
   readPendingChanges,
@@ -82,10 +88,11 @@ function withStatusMeta(change, status, actor, note) {
   };
 }
 
-function findConflict(lessons, action) {
+function findConflict(lessons, action, excludeLessonId = null) {
   return lessons.find(
     (l) =>
       l.active !== false &&
+      l.id !== excludeLessonId &&
       l.day_of_week === action.day_of_week &&
       timesOverlap(l.start_time, l.end_time, action.start_time, action.end_time)
   );
@@ -185,6 +192,87 @@ async function applyPendingChange(change, lessons, exceptions, actor) {
     };
   }
 
+  if (action.action === "reschedule") {
+    if (!action.lesson_id) {
+      return {
+        ok: false,
+        reason: "Queued reschedule request is missing lesson_id.",
+        reviewedChange: withStatusMeta(change, "rejected", actor, "missing lesson_id"),
+      };
+    }
+
+    const lessonIdx = lessons.findIndex((l) => l.id === action.lesson_id && l.active !== false);
+    if (lessonIdx === -1) {
+      return {
+        ok: false,
+        reason: "Queued reschedule request refers to a lesson that no longer exists.",
+        reviewedChange: withStatusMeta(change, "rejected", actor, `lesson_id ${action.lesson_id} not found`),
+      };
+    }
+
+    const existing = lessons[lessonIdx];
+    const newStart = action.start_time || existing.start_time;
+    const duration = (() => {
+      const s = existing.start_time?.split(":").map(Number);
+      const e = existing.end_time?.split(":").map(Number);
+      if (!s || !e) return 60;
+      return (e[0] * 60 + e[1]) - (s[0] * 60 + s[1]);
+    })();
+    const parseMin = (value) => {
+      const p = String(value || "").split(":").map(Number);
+      if (p.length !== 2 || p.some((n) => Number.isNaN(n))) return null;
+      return p[0] * 60 + p[1];
+    };
+    const startMin = parseMin(newStart);
+    const endTime = action.end_time || (startMin === null ? null : (() => {
+      const total = startMin + duration;
+      const norm = ((total % (24 * 60)) + 24 * 60) % (24 * 60);
+      return `${String(Math.floor(norm / 60)).padStart(2, "0")}:${String(norm % 60).padStart(2, "0")}`;
+    })());
+
+    const reschedulePayload = {
+      ...existing,
+      student: action.student || existing.student,
+      subject: action.subject || existing.subject,
+      day_of_week: action.day_of_week ?? existing.day_of_week,
+      recurring: action.recurring ?? existing.recurring,
+      start_time: newStart,
+      end_time: endTime || existing.end_time,
+      specific_date: existing.specific_date,
+    };
+
+    const conflict = findConflict(
+      lessons,
+      {
+        ...reschedulePayload,
+        day_of_week: action.day_of_week ?? existing.day_of_week,
+        start_time: reschedulePayload.start_time,
+        end_time: reschedulePayload.end_time,
+      },
+      action.lesson_id
+    );
+    if (conflict) {
+      return {
+        ok: false,
+        reason: `Conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
+        reviewedChange: withStatusMeta(
+          change,
+          "rejected",
+          actor,
+          `Conflicts with ${conflict.student} (${conflict.subject || "no subject"}) ${conflict.start_time}-${conflict.end_time}`
+        ),
+      };
+    }
+
+    lessons[lessonIdx] = reschedulePayload;
+    return {
+      ok: true,
+      lessons,
+      action: { lesson: reschedulePayload },
+      reviewedChange: withStatusMeta(change, "approved", actor, "approved"),
+    };
+  }
+
   return {
     ok: false,
     reason: `Unknown action type: ${action.action}`,
@@ -207,10 +295,11 @@ exports.handler = async (event) => {
     const store = getLessonStore(event);
 
     if (event.httpMethod === "GET") {
-      const [lessons, exceptions, approvalSettings, pendingChanges, userIdentityMap] = await Promise.all([
+      const [lessons, exceptions, approvalSettings, usageSettings, pendingChanges, userIdentityMap] = await Promise.all([
         readLessons(store),
         readExceptions(store),
         readApprovalSettings(store),
+        getUsageSettings(store),
         readPendingChanges(store),
         readUserIdentityMap(store),
       ]);
@@ -224,6 +313,7 @@ exports.handler = async (event) => {
         exceptions,
         dayNames: DAY_NAMES,
         approvalSettings,
+        usageSettings,
         userIdentities: formatUserIdentities(userIdentityMap),
         pendingChanges: pendingChangesWithEmails.filter((item) => item.status === "pending"),
         allPendingChanges: pendingChangesWithEmails,
@@ -238,6 +328,49 @@ exports.handler = async (event) => {
         const settings = normalizeSettingsPayload(body.settings || {});
         await writeApprovalSettings(store, settings);
         return jsonResponse(200, { approvalSettings: settings, saved: true });
+      }
+
+      if (operation === "set_default_limit") {
+        const defaultDailyPromptLimit = Number(body.defaultDailyPromptLimit);
+        if (!Number.isFinite(defaultDailyPromptLimit) || defaultDailyPromptLimit < 0) {
+          return jsonResponse(400, { error: "defaultDailyPromptLimit must be a non-negative number" });
+        }
+        await writeUsageSettings(store, { defaultDailyPromptLimit });
+        const settings = await getUsageSettings(store);
+        return jsonResponse(200, { usageSettings: settings, saved: true });
+      }
+
+      if (operation === "set_user_limit") {
+        const { userId, promptLimit } = body;
+        if (!userId) return jsonResponse(400, { error: "userId is required for set_user_limit" });
+        const normalized = Number(promptLimit);
+        if (!Number.isFinite(normalized) || normalized < 0) {
+          return jsonResponse(400, { error: "promptLimit must be a non-negative number." });
+        }
+        const limit = await setUserPromptLimit(store, userId, normalized);
+        if (limit === null) return jsonResponse(400, { error: "Could not set user limit." });
+        return jsonResponse(200, { userId, promptLimit: limit, saved: true });
+      }
+
+      if (operation === "reset_user_limit") {
+        const { userId } = body;
+        if (!userId) return jsonResponse(400, { error: "userId is required for reset_user_limit" });
+        const limit = await resetUserPromptLimit(store, userId);
+        if (limit === null) return jsonResponse(400, { error: "Could not reset user limit." });
+        return jsonResponse(200, { userId, promptLimit: limit, saved: true });
+      }
+
+      if (operation === "reset_user_usage") {
+        const { userId, userEmail } = body;
+        if (!userId) return jsonResponse(400, { error: "userId is required for reset_user_usage" });
+        const result = await resetUserUsage(store, userId, userEmail);
+        if (!result) return jsonResponse(400, { error: "Could not reset user usage." });
+        return jsonResponse(200, { usage: result, saved: true });
+      }
+
+      if (operation === "reset_all_usage") {
+        await resetAllUsage(store);
+        return jsonResponse(200, { saved: true, resetAll: true });
       }
 
       if (operation === "update_user_identity") {
