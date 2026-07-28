@@ -10,7 +10,9 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const CODE_TTL_MS = 1000 * 60 * 10;
 const COOLDOWN_MS = 30 * 1000;
 const MAX_OTP_ATTEMPTS = 6;
-const ADMIN_EMAILS = normalizeEmail(process.env.ADMIN_EMAILS || process.env.ADMIN_EMAIL || "");
+const ADMIN_EMAILS = normalizeEmail(process.env.ADMIN_EMAILS || "");
+const LEGACY_ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || "");
+const MAINTAINER_EMAIL = normalizeEmail(process.env.MAINTAINER_EMAIL || process.env.maintainer_email || "");
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
@@ -54,10 +56,19 @@ function clearSessionCookie() {
 }
 
 function getAdminEmails() {
-  return ADMIN_EMAILS.split(",")
+  const emailSet = new Set();
+  ADMIN_EMAILS.split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-    .filter((email) => isValidEmail(email));
+    .filter((email) => isValidEmail(email))
+    .forEach((email) => emailSet.add(email));
+  if (isValidEmail(LEGACY_ADMIN_EMAIL)) emailSet.add(LEGACY_ADMIN_EMAIL);
+  if (isValidEmail(MAINTAINER_EMAIL)) emailSet.add(MAINTAINER_EMAIL);
+  return Array.from(emailSet);
+}
+
+function getMaintainerEmail() {
+  return MAINTAINER_EMAIL || "";
 }
 
 function isAdminEmail(email) {
@@ -184,4 +195,5 @@ module.exports = {
   makeSessionCookie,
   clearSessionCookie,
   getAdminEmails,
+  getMaintainerEmail,
 };

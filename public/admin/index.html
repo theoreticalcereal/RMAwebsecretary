@@ -329,6 +329,10 @@
     color: var(--muted);
     font-size: 0.8rem;
   }
+  .admin-meta small {
+    display: block;
+    margin-top: 2px;
+  }
   .dashboard-head button {
     border: 1px solid var(--border);
     background: #fff;
@@ -367,7 +371,10 @@
 
   <div id="dashboard-view" class="hidden">
     <div class="dashboard-head">
-      <div class="admin-meta">Signed in as <strong id="admin-user"></strong></div>
+      <div class="admin-meta">
+        <div>Signed in as <strong id="admin-user"></strong></div>
+        <small>Maintainer email: <span id="maintainer-email">not set</span></small>
+      </div>
       <button type="button" id="logout-btn">Log out</button>
     </div>
 
@@ -520,9 +527,10 @@ function setAuthError(message) {
   else el.classList.remove("show");
 }
 
-function setSessionView(authorized, user) {
+function setSessionView(authorized, user, sessionData = {}) {
   const loginView = document.getElementById("login-view");
   const dashboardView = document.getElementById("dashboard-view");
+  const maintainerEmailEl = document.getElementById("maintainer-email");
 
   if (!authorized) {
     loginView.classList.remove("hidden");
@@ -531,6 +539,7 @@ function setSessionView(authorized, user) {
     document.getElementById("code-input").value = "";
     document.getElementById("email-input").value = "";
     state.user = null;
+    if (maintainerEmailEl) maintainerEmailEl.textContent = "not set";
     state.pendingOpen = false;
     state.pendingCount = 0;
     if (state.pendingAutoRefresh) {
@@ -542,6 +551,8 @@ function setSessionView(authorized, user) {
 
   state.user = user;
   document.getElementById("admin-user").textContent = user.email;
+  const maintainerEmail = String(sessionData.maintainerEmail || "").trim();
+  if (maintainerEmailEl) maintainerEmailEl.textContent = maintainerEmail || "not set";
   loginView.classList.add("hidden");
   dashboardView.classList.remove("hidden");
   if (!state.pendingAutoRefresh) {
@@ -612,7 +623,7 @@ async function refreshSession() {
       setSessionView(false);
       return;
     }
-    setSessionView(true, data.user);
+    setSessionView(true, data.user, data);
   } catch (err) {
     setSessionView(false);
   }
@@ -679,8 +690,8 @@ document.getElementById("verify-form").addEventListener("submit", async (e) => {
       setSessionView(false);
       return;
     }
-    setSessionView(true, data.user);
-    clearError();
+      setSessionView(true, sessionData.user, sessionData);
+      clearError();
   } catch (err) {
     setAuthError(err.message || "Could not verify code.");
   } finally {

@@ -1,5 +1,5 @@
 const { jsonResponse } = require("./_store");
-const { clearSessionCookie, getSession, isAdminUser } = require("./_auth");
+const { clearSessionCookie, getSession, isAdminUser, getMaintainerEmail } = require("./_auth");
 
 exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
@@ -9,6 +9,7 @@ exports.handler = async (event) => {
       authenticated: true,
       user: { email: user.email, id: user.id },
       admin: isAdminUser(user),
+      maintainerEmail: getMaintainerEmail(),
     });
   }
 
