@@ -284,14 +284,45 @@ assistantForm.addEventListener("submit", async (e) => {
   assistantSubmit.textContent = "Thinking...";
   assistantReply.classList.remove("show", "error");
 
+  let res;
   try {
-    const res = await fetch("/api/assistant", {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    res = await fetch("/api/assistant", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
+      signal: controller.signal,
     });
-    const data = await res.json();
+    clearTimeout(timeoutId);
+  } catch (err) {
+    const timedOut = err.name === "AbortError";
+    console.error("Network-level failure calling /api/assistant:", err);
+    assistantReply.textContent = timedOut
+      ? "The assistant took too long to respond, try a shorter or simpler request."
+      : "Network error, please check your connection and try again.";
+    assistantReply.classList.add("show", "error");
+    assistantSubmit.textContent = "Send";
+    fetchUsage();
+    return;
+  }
 
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    // The request completed but the response body wasn't valid JSON, most
+    // likely the function was cut off mid-response (e.g. a timeout on a
+    // slow NIM call) or crashed after partially writing output.
+    console.error("Failed to parse response from /api/assistant:", err);
+    assistantReply.textContent = `The assistant's response couldn't be read (HTTP ${res.status}). It may have timed out, try a shorter or simpler request.`;
+    assistantReply.classList.add("show", "error");
+    assistantSubmit.textContent = "Send";
+    fetchUsage();
+    return;
+  }
+
+  try {
     if (!res.ok) {
       assistantReply.textContent = data.detail || data.error || "Something went wrong.";
       assistantReply.classList.add("show", "error");
@@ -303,9 +334,6 @@ assistantForm.addEventListener("submit", async (e) => {
         refresh();
       }
     }
-  } catch (err) {
-    assistantReply.textContent = "Network error, please try again.";
-    assistantReply.classList.add("show", "error");
   } finally {
     assistantSubmit.textContent = "Send";
     fetchUsage();

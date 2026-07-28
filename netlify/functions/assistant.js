@@ -155,7 +155,7 @@ async function innerHandler(event, visitorId) {
 
   try {
     const store = getLessonStore(event);
-    const usage = await readUsage(store, visitorId);
+    const [usage, lessons] = await Promise.all([readUsage(store, visitorId), readLessons(store)]);
 
     if (usage.count >= DAILY_PROMPT_LIMIT) {
       // Only email the maintainer once per visitor per day, the first time
@@ -178,11 +178,16 @@ async function innerHandler(event, visitorId) {
       });
     }
 
-    const lessons = await readLessons(store);
     const action = await callNim(apiKey, body.message, lessons);
 
-    // Count this prompt now that the NIM call has succeeded.
-    await writeUsage(store, visitorId, { ...usage, count: usage.count + 1 });
+    // Count this prompt now that the NIM call has succeeded. Not awaited,
+    // since the response to the user doesn't depend on this write landing
+    // first, and every extra sequential await here is latency the person
+    // is sitting through. A failure here just means one prompt isn't
+    // counted, which is harmless.
+    writeUsage(store, visitorId, { ...usage, count: usage.count + 1 }).catch((err) =>
+      console.error("Failed to write usage count (non-fatal):", err)
+    );
 
     // Query / unknown: nothing to apply, just return the model's reply.
     if (action.action === "query" || action.action === "unknown" || !action.action) {

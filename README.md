@@ -106,6 +106,33 @@ available in that deploy context. A few things to check:
    `netlify link` run at least once), since Blobs needs a linked site
    context to know where to store data.
 
+## "Network error, please try again" while the lesson still gets created
+
+If the assistant successfully creates the lesson but the UI still shows a
+network error, the request is completing on the backend but something is
+going wrong on the way back to the browser, most likely a slow response
+(the NIM call plus a few Blobs reads/writes in sequence) running long
+enough to get cut off before the browser receives the full response.
+
+Two things address this directly:
+
+- `assistant.js` now parallelizes the independent reads (`readUsage` and
+  `readLessons` run together instead of one after another) and no longer
+  waits on the final usage-count write before responding, which cuts the
+  number of sequential round-trips in the request.
+- The frontend now sets an explicit 25 second timeout on the request and
+  distinguishes three different failure points instead of lumping them
+  into one message: a genuine network failure, a timeout, and a response
+  that came back but couldn't be parsed as JSON. Whichever one happens,
+  you'll see a message that says which, instead of a generic "network
+  error" regardless of cause.
+
+If you still see this after these changes, check your function's actual
+duration in the Netlify dashboard's function logs. Netlify's free tier
+caps synchronous function execution at 10 seconds; if the NIM call itself
+is regularly taking longer than that, the fix is either a faster NIM model
+or moving to Netlify's background functions for this endpoint.
+
 ## Try it
 
 **Public page:**
