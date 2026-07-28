@@ -164,6 +164,33 @@
   .assistant-usage.low { color: var(--danger); }
   .assistant-usage.ok { color: var(--success); }
 
+  .request-section {
+    margin-top: 12px;
+  }
+  .request-section h3 {
+    margin: 0 0 8px;
+    font-size: 0.95rem;
+  }
+  .requests-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .requests-table th,
+  .requests-table td {
+    text-align: left;
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .requests-table th { background: #f0f2f5; color: var(--muted); }
+  .requests-table tr:last-child td { border-bottom: none; }
+  .requests-empty { color: var(--muted); font-size: 0.78rem; margin-top: 6px; }
+
   .calendar {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
@@ -246,6 +273,21 @@
         <button class="send-btn" type="submit" id="assistant-submit">Send</button>
       </form>
       <div class="assistant-usage" id="assistant-usage"></div>
+      <section class="request-section" id="request-section">
+        <h3>Recent requests</h3>
+        <table class="requests-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Request</th>
+            </tr>
+          </thead>
+          <tbody id="requests-tbody"></tbody>
+        </table>
+        <div class="requests-empty" id="requests-empty">No recent requests</div>
+      </section>
     </section>
   </div>
 
@@ -325,6 +367,7 @@ function setSessionView(showSignedIn, user) {
       appendMessage("system", `You are signed in as ${user.email}. You can now chat with the assistant.`);
       conversation.dataset.ready = "1";
     }
+    document.getElementById("request-section").classList.remove("hidden");
     if (!state.calendarRefreshId) {
       state.calendarRefreshId = setInterval(() => {
         if (document.visibilityState === "visible") refresh();
@@ -343,6 +386,11 @@ function setSessionView(showSignedIn, user) {
     setAuthInfo("");
     conversation.innerHTML = "";
     conversation.removeAttribute("data-ready");
+    document.getElementById("request-section").classList.add("hidden");
+    const requestsTbody = document.getElementById("requests-tbody");
+    const requestsEmpty = document.getElementById("requests-empty");
+    requestsTbody.innerHTML = "";
+    requestsEmpty.style.display = "block";
     state.user = null;
   }
 }
@@ -426,6 +474,44 @@ function renderUsage(usage) {
   }
 }
 
+function formatRequestStatus(change) {
+  const status = String(change.status || "pending").toLowerCase();
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  if (status === "pending") return "pending";
+  return `status: ${status}`;
+}
+
+function renderUserRequests(usage) {
+  const tbody = document.getElementById("requests-tbody");
+  const empty = document.getElementById("requests-empty");
+  const requests = Array.isArray(usage?.requests) ? usage.requests : [];
+  tbody.innerHTML = "";
+
+  if (!requests.length) {
+    empty.style.display = "block";
+    return;
+  }
+
+  empty.style.display = "none";
+  const sorted = requests
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  sorted.forEach((change) => {
+    const tr = document.createElement("tr");
+    const action = change?.action?.action || "unknown";
+    const requestText = change.requestMessage || "No message";
+    tr.innerHTML = `
+      <td>${escapeHtml(String(change.createdAt || "").replace("T", " ").slice(0, 16))}</td>
+      <td>${escapeHtml(action)}</td>
+      <td>${escapeHtml(formatRequestStatus(change))}</td>
+      <td>${escapeHtml(requestText)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
 async function fetchUsage() {
   try {
     const res = await fetch("/api/assistant", { credentials: "include" });
@@ -439,6 +525,7 @@ async function fetchUsage() {
       return;
     }
     renderUsage(data);
+    renderUserRequests(data);
   } catch (err) {
     console.error(err);
   }

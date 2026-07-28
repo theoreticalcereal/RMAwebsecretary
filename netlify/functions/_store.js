@@ -48,6 +48,8 @@ async function writeUsage(store, userId, usage) {
 const APPROVAL_SETTINGS_KEY = "approval_settings";
 const PENDING_CHANGES_KEY = "pending_changes";
 const USER_IDENTITY_MAP_KEY = "user_identity_map";
+const RESOLVED_REQUEST_TTL_HOURS = 24;
+const RESOLVED_REQUEST_TTL_MS = RESOLVED_REQUEST_TTL_HOURS * 60 * 60 * 1000;
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
@@ -99,6 +101,31 @@ async function readPendingChanges(store) {
 
 async function writePendingChanges(store, pendingChanges) {
   await store.setJSON(PENDING_CHANGES_KEY, pendingChanges);
+}
+
+function isResolvedRequestVisible(change, nowMs = Date.now()) {
+  if (!change || typeof change !== "object") return false;
+  if (change.status === "pending") return true;
+
+  const reviewedAt = change.reviewedAt || change.createdAt;
+  const reviewedTime = reviewedAt ? Date.parse(reviewedAt) : NaN;
+  if (!Number.isFinite(reviewedTime)) return false;
+
+  return nowMs - reviewedTime <= RESOLVED_REQUEST_TTL_MS;
+}
+
+function filterVisiblePendingChanges(changes) {
+  return (Array.isArray(changes) ? changes : []).filter((change) => isResolvedRequestVisible(change));
+}
+
+function filterPendingChangesForUser(changes, userId, userEmail) {
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedEmail = String(userEmail || "").trim().toLowerCase();
+  return filterVisiblePendingChanges(changes).filter((change) => {
+    const requestedBy = String(change?.requestedBy || "").trim();
+    const email = String(change?.requestedByEmail || "").trim().toLowerCase();
+    return requestedBy === normalizedUserId || (normalizedEmail && email === normalizedEmail);
+  });
 }
 
 async function readUserIdentityMap(store) {
@@ -222,6 +249,9 @@ module.exports = {
   writeApprovalSettings,
   readPendingChanges,
   writePendingChanges,
+  filterVisiblePendingChanges,
+  filterPendingChangesForUser,
+  RESOLVED_REQUEST_TTL_HOURS,
   readUserIdentityMap,
   writeUserIdentityMap,
   recordUserIdentity,

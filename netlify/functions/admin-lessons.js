@@ -9,6 +9,7 @@ const {
   writeApprovalSettings,
   readPendingChanges,
   writePendingChanges,
+  filterVisiblePendingChanges,
   readUserIdentityMap,
   updateUserIdentity,
   jsonResponse,
@@ -213,7 +214,8 @@ exports.handler = async (event) => {
         readPendingChanges(store),
         readUserIdentityMap(store),
       ]);
-      const pendingChangesWithEmails = pendingChanges.map((change) => ({
+      const visiblePendingChanges = filterVisiblePendingChanges(pendingChanges);
+      const pendingChangesWithEmails = visiblePendingChanges.map((change) => ({
         ...change,
         requestedByEmail: resolveRequesterEmail(userIdentityMap, change),
       }));

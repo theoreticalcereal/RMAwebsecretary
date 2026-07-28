@@ -8,6 +8,8 @@ const {
   readApprovalSettings,
   readPendingChanges,
   writePendingChanges,
+  filterPendingChangesForUser,
+  RESOLVED_REQUEST_TTL_HOURS,
   recordUserIdentity,
   readUsage,
   writeUsage,
@@ -427,12 +429,18 @@ async function innerHandler(event, user) {
     try {
       const store = getLessonStore(event);
       await recordUserIdentity(store, userId, userEmail);
-      const usage = await readUsage(store, userId);
+      const [usage, pendingChanges] = await Promise.all([
+        readUsage(store, userId),
+        readPendingChanges(store),
+      ]);
+      const requests = filterPendingChangesForUser(pendingChanges, userId, userEmail);
       return jsonResponse(200, {
         limit: DAILY_PROMPT_LIMIT,
         used: usage.count,
         remaining: Math.max(0, DAILY_PROMPT_LIMIT - usage.count),
         limitReached: usage.count >= DAILY_PROMPT_LIMIT,
+        requests,
+        requestRetentionHours: RESOLVED_REQUEST_TTL_HOURS,
       });
     } catch (err) {
       console.error(err);
