@@ -24,7 +24,7 @@ const { notifyMaintainer } = require("./_notify");
 const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const NIM_MODEL = "meta/llama-3.1-70b-instruct";
+const NIM_MODEL = "meta/llama-3.3-70b-instruct";
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAY_NAME_TO_INDEX = {
@@ -645,7 +645,7 @@ async function callNim(apiKey, userMessage, lessons) {
           { role: "user", content: `CURRENT LESSONS:\n${lessonsSummary}\n\nUSER REQUEST:\n${userMessage}` },
         ],
         temperature: 0.2,
-        max_tokens: 220,
+        max_tokens: 1024,
       }),
     });
   } catch (networkErr) {
@@ -666,6 +666,23 @@ async function callNim(apiKey, userMessage, lessons) {
   } catch {
     throw new Error(`Model did not return valid JSON: ${raw}`);
   }
+}
+
+async function parseActionFromAi(message, lessons, store) {
+  const rateSlot = await canConsumeNimRequestSlot(store, nowInMs());
+  if (!rateSlot.allowed) {
+    const err = new Error("NIM_RATE_LIMITED");
+    err.rateLimited = true;
+    err.retryAfterMs = rateSlot.retryAfterMs;
+    throw err;
+  }
+
+  const apiKey = process.env.NVIDIA_NIM_API_KEY;
+  if (!apiKey) {
+    throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
+  }
+
+  return callNim(apiKey, message, lessons);
 }
 
 function formatRateLimitMessage(retryAfterMs) {
@@ -810,28 +827,29 @@ async function innerHandler(event, user) {
       return jsonResponse(result.applied ? 201 : 200, result);
     }
 
-    const rateSlot = await canConsumeNimRequestSlot(store, nowInMs());
-    if (!rateSlot.allowed) {
-      return jsonResponse(429, {
-        action: {
-          action: "query",
-          reply: formatRateLimitMessage(rateSlot.retryAfterMs),
-        },
-        applied: false,
-        rateLimited: true,
-        rateLimit: {
-          limitPerMinute: NIM_RATE_LIMIT_PER_WINDOW,
-          windowMs: NIM_RATE_WINDOW_MS,
-          retryAfterMs: rateSlot.retryAfterMs,
-        },
-      });
-    }
-
-    const apiKey = process.env.NVIDIA_NIM_API_KEY;
-    if (!apiKey) return jsonResponse(500, { error: "NVIDIA_NIM_API_KEY is not set in environment" });
-
     await writeUsage(store, userId, nextUsage);
-    const action = await callNim(apiKey, body.message, lessons);
+    let action;
+    try {
+      const result = await parseActionFromAi(body.message, lessons, store);
+      action = result;
+    } catch (err) {
+      if (err.rateLimited) {
+        return jsonResponse(429, {
+          action: {
+            action: "query",
+            reply: formatRateLimitMessage(err.retryAfterMs),
+          },
+          applied: false,
+          rateLimited: true,
+          rateLimit: {
+            limitPerMinute: NIM_RATE_LIMIT_PER_WINDOW,
+            windowMs: NIM_RATE_WINDOW_MS,
+            retryAfterMs: err.retryAfterMs,
+          },
+        });
+      }
+      return jsonResponse(500, { error: "internal error", detail: String(err.message || err) });
+    }
 
     if (action.action === "query" || action.action === "unknown" || !action.action) {
       return jsonResponse(200, { action, applied: false, limit: userLimit, used: nextUsage.count });
