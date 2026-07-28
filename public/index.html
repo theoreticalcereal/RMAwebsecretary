@@ -656,7 +656,8 @@ assistantForm.addEventListener("submit", async (e) => {
         assistantRow.classList.add("error");
         return;
       }
-      const fallback = data?.detail || data?.error || data?.action?.reply || "Something went wrong.";
+      const fallback =
+        data?.detail || data?.error || data?.action?.reply || (data?.timedOut ? "The assistant timed out. Please retry." : "Something went wrong.");
       assistantRow.querySelector(".bubble").textContent = fallback;
       assistantRow.classList.add("error");
       return;

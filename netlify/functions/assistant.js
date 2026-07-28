@@ -25,6 +25,8 @@ const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NIM_MODEL = "meta/llama-3.3-70b-instruct";
+const NIM_TIMEOUT_MS = 45000;
+const NIM_REASON_TIMEOUT_MS = 15000;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAY_NAME_TO_INDEX = {
@@ -618,7 +620,61 @@ function parseQuickQuery(message) {
   return null;
 }
 
-async function callNim(apiKey, userMessage, lessons) {
+function parseQuickAction(message) {
+  const quickQuery = parseQuickQuery(message);
+  const fastAdd = parseSimpleAddRequest(message);
+  const fastReschedule = parseSimpleRescheduleRequest(message);
+  const fastCancel = parseQuickCancelRequest(message);
+  return fastAdd || fastCancel || fastReschedule || quickQuery;
+}
+
+function isFastActionComplete(action) {
+  if (!action) return false;
+  if (action.action === "add") {
+    return action.day_of_week !== null && action.day_of_week !== undefined && !!action.start_time && !!action.end_time;
+  }
+  if (action.action === "reschedule") {
+    return !!action.start_time;
+  }
+  if (action.action === "cancel") {
+    return action.lesson_id || action.student || action.subject;
+  }
+  return action.action === "query" || action.action === "delete";
+}
+
+async function parseActionTwoStage(message, lessons, store, requiresAiReason) {
+  const stage1 = parseQuickAction(message);
+
+  if (stage1 && isFastActionComplete(stage1) && !(requiresAiReason && stage1.action !== "query")) {
+    return { action: stage1, reason: "", usedAi: false };
+  }
+
+  const needsReasonOnly = Boolean(stage1 && requiresAiReason && stage1.action !== "query");
+  const apiKey = process.env.NVIDIA_NIM_API_KEY;
+  if (!apiKey) {
+    throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
+  }
+
+  if (needsReasonOnly) {
+    try {
+      await reserveNimRequestSlot(store);
+      const reason = await inferReasonOnly(apiKey, message);
+      return { action: stage1 || { action: "unknown", reason: null }, reason, usedAi: true };
+    } catch (err) {
+      if (err.rateLimited) throw err;
+      return { action: stage1 || { action: "unknown", reason: null }, reason: "", usedAi: true };
+    }
+  }
+
+  const stage2 = await parseActionFromAi(message, lessons, store);
+  return { action: stage2, reason: normalizeReason(stage2 && stage2.reason), usedAi: true };
+}
+
+async function callNim(apiKey, userMessage, lessons, options = {}) {
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : NIM_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   const lessonsSummary = lessons
     .filter((l) => l.active !== false)
     .map(
@@ -637,6 +693,7 @@ async function callNim(apiKey, userMessage, lessons) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
+      signal: controller.signal,
       body: JSON.stringify({
         model: NIM_MODEL,
         messages: [
@@ -648,15 +705,23 @@ async function callNim(apiKey, userMessage, lessons) {
       }),
     });
   } catch (networkErr) {
+    clearTimeout(timeoutId);
+    if (networkErr?.name === "AbortError") {
+      const err = new Error(`NIM request timed out after ${timeoutMs}ms`);
+      err.code = "NIM_TIMEOUT";
+      throw err;
+    }
     throw new Error(`Could not reach NIM API: ${networkErr.message || networkErr}`);
   }
 
   if (!res.ok) {
+    clearTimeout(timeoutId);
     const text = await res.text();
     throw new Error(`NIM API error ${res.status}: ${text}`);
   }
 
   const data = await res.json();
+  clearTimeout(timeoutId);
   const raw = data.choices?.[0]?.message?.content?.trim() || "{}";
   const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "");
 
@@ -667,7 +732,81 @@ async function callNim(apiKey, userMessage, lessons) {
   }
 }
 
+async function inferReasonOnly(apiKey, userMessage) {
+  let res;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), NIM_REASON_TIMEOUT_MS);
+  try {
+    res = await fetch(NIM_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: NIM_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              `You extract only the user's reason from a scheduling request.`
+              + ` Return JSON only: {"reason":"..."}`
+              + ` If no reason is present, use {"reason":null}.`,
+          },
+          {
+            role: "user",
+            content: userMessage,
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 120,
+      }),
+    });
+  } catch (networkErr) {
+    clearTimeout(timeoutId);
+    if (networkErr?.name === "AbortError") {
+      const err = new Error(`NIM reason extraction timed out after ${NIM_REASON_TIMEOUT_MS}ms`);
+      err.code = "NIM_TIMEOUT";
+      throw err;
+    }
+    throw new Error(`Could not reach NIM API for reason extraction: ${networkErr.message || networkErr}`);
+  }
+  if (!res.ok) {
+    clearTimeout(timeoutId);
+    const text = await res.text();
+    throw new Error(`NIM reason extraction error ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  clearTimeout(timeoutId);
+  const raw = data?.choices?.[0]?.message?.content?.trim() || "{}";
+  const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "");
+  try {
+    const parsed = JSON.parse(cleaned);
+    return normalizeReason(parsed?.reason);
+  } catch {
+    return "";
+  }
+}
+
 async function parseActionFromAi(message, lessons, store) {
+  await reserveNimRequestSlot(store);
+
+  const apiKey = process.env.NVIDIA_NIM_API_KEY;
+  if (!apiKey) {
+    throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
+  }
+
+  const action = await callNim(apiKey, message, lessons);
+  return action;
+}
+
+function formatRateLimitMessage(retryAfterMs) {
+  const waitMinutes = Math.max(1, Math.ceil((retryAfterMs || 0) / 1000 / 60));
+  return `AI request throttled. Retry in about ${waitMinutes} minute(s).`;
+}
+
+async function reserveNimRequestSlot(store) {
   const rateSlot = await canConsumeNimRequestSlot(store, nowInMs());
   if (!rateSlot.allowed) {
     const err = new Error("NIM_RATE_LIMITED");
@@ -675,18 +814,6 @@ async function parseActionFromAi(message, lessons, store) {
     err.retryAfterMs = rateSlot.retryAfterMs;
     throw err;
   }
-
-  const apiKey = process.env.NVIDIA_NIM_API_KEY;
-  if (!apiKey) {
-    throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
-  }
-
-  return callNim(apiKey, message, lessons);
-}
-
-function formatRateLimitMessage(retryAfterMs) {
-  const waitMinutes = Math.max(1, Math.ceil((retryAfterMs || 0) / 1000 / 60));
-  return `AI request throttled. Retry in about ${waitMinutes} minute(s).`;
 }
 
 exports.handler = async (event) => {
@@ -778,65 +905,21 @@ async function innerHandler(event, user) {
     }
 
     const nextUsage = { ...usage, userEmail, count: usage.count + 1 };
-    const quickQuery = parseQuickQuery(body.message);
-    const fastAdd = parseSimpleAddRequest(body.message);
-    const fastReschedule = parseSimpleRescheduleRequest(body.message);
-    const fastCancel = parseQuickCancelRequest(body.message);
-    const skipFastPath =
+    const requiresAiReason =
       approvalSettings.mode === "automatic" &&
       approvalSettings.auto &&
       approvalSettings.auto.requireReason === true;
-    const fastAction = skipFastPath ? null : fastAdd || fastCancel || fastReschedule || quickQuery;
-
-    if (fastAction) {
-      await writeUsage(store, userId, nextUsage);
-
-      if (fastAction.action === "add") {
-        if (fastAction.day_of_week === null || fastAction.day_of_week === undefined || !fastAction.start_time || !fastAction.end_time) {
-          return jsonResponse(200, {
-            action: { ...fastAction, action: "unknown", reply: "I need a day and start/end time to add this lesson." },
-            applied: false,
-          });
-        }
-      }
-
-      if (fastAction.action === "reschedule") {
-        if (!fastAction.start_time) {
-          return jsonResponse(200, {
-            action: { ...fastAction, action: "unknown", reply: "I need a new start time to reschedule." },
-            applied: false,
-          });
-        }
-      }
-
-      if (fastAction.action === "cancel" && !fastAction.lesson_id && !fastAction.student && !fastAction.subject) {
-        return jsonResponse(200, {
-          action: { ...fastAction, action: "unknown", reply: "Which lesson should I cancel?" },
-          applied: false,
-        });
-      }
-
-      const reason = "";
-      const result = await applyActionOrQueue(
-        store,
-        fastAction,
-        body.message,
-        userId,
-        lessons,
-        approvalSettings,
-        reason,
-        userEmail
-      );
-      return jsonResponse(result.applied ? 201 : 200, result);
-    }
 
     await writeUsage(store, userId, nextUsage);
     let action;
     let inferredReason = "";
     try {
-      const result = await parseActionFromAi(body.message, lessons, store);
-      action = result;
-      inferredReason = normalizeReason(result && result.reason);
+      const parseResult = await parseActionTwoStage(body.message, lessons, store, requiresAiReason);
+      action = parseResult.action;
+      inferredReason = parseResult.reason || "";
+      if (!action || action.action === "query") {
+        return jsonResponse(200, { action, applied: false, limit: userLimit, used: nextUsage.count });
+      }
     } catch (err) {
       if (err.rateLimited) {
         return jsonResponse(429, {
@@ -851,6 +934,17 @@ async function innerHandler(event, user) {
             windowMs: NIM_RATE_WINDOW_MS,
             retryAfterMs: err.retryAfterMs,
           },
+        });
+      }
+      if (err.code === "NIM_TIMEOUT") {
+        return jsonResponse(503, {
+          action: {
+            action: "query",
+            reply: "The assistant timed out while reasoning. If this is a scheduling request, try again.",
+          },
+          applied: false,
+          timedOut: true,
+          error: "timeout",
         });
       }
       return jsonResponse(500, { error: "internal error", detail: String(err.message || err) });
