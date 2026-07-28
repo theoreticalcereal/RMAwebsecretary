@@ -255,6 +255,8 @@
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
+const ASSISTANT_REQUEST_TIMEOUT_MS = 12000;
+
 const state = {
   user: null,
 };
@@ -544,7 +546,7 @@ assistantForm.addEventListener("submit", async (e) => {
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const timeoutId = setTimeout(() => controller.abort(), ASSISTANT_REQUEST_TIMEOUT_MS);
     const res = await fetch("/api/assistant", {
       method: "POST",
       credentials: "include",
@@ -580,10 +582,14 @@ assistantForm.addEventListener("submit", async (e) => {
     const timedOut = err.name === "AbortError";
     console.error("Network-level failure calling /api/assistant:", err);
     const messageText = timedOut
-      ? "The assistant took too long to respond, try a shorter or simpler request."
+      ? "The request took longer than expected. If this was a scheduling request, it may still apply; usage will refresh in a moment."
       : "Network error, please check your connection and try again.";
     assistantRow.querySelector(".bubble").textContent = messageText;
     assistantRow.classList.add("error");
+    if (timedOut) {
+      setTimeout(fetchUsage, 1200);
+      setTimeout(fetchUsage, 3500);
+    }
   } finally {
     formSubmit.disabled = false;
     formSubmit.textContent = "Send";

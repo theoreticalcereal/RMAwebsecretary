@@ -34,6 +34,15 @@ const NIM_MODEL = "meta/llama-3.1-70b-instruct";
 const DAILY_PROMPT_LIMIT = 5;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const DAY_NAME_TO_INDEX = {
+  monday: 0,
+  tuesday: 1,
+  wednesday: 2,
+  thursday: 3,
+  friday: 4,
+  saturday: 5,
+  sunday: 6,
+};
 
 const SYSTEM_PROMPT = `You are a scheduling assistant for a lesson calendar. You convert a user's natural-language request into a single JSON action. Reply with ONLY the JSON object, no other text, no markdown fences.
 
@@ -61,6 +70,79 @@ Rules:
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.`;
 
+function parseTo24Hour(hour, minute, meridian) {
+  const h = Number(hour);
+  const m = Number(minute || 0);
+  const period = (meridian || "").toLowerCase();
+
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  if (m < 0 || m > 59) return null;
+  if (h < 0 || h > 23) return null;
+
+  if (period) {
+    if (h < 1 || h > 12) return null;
+    let hh = h;
+    if (period === "am") {
+      hh = h === 12 ? 0 : h;
+    } else if (period === "pm") {
+      hh = h === 12 ? 12 : h + 12;
+    }
+    return `${String(hh).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+
+  if (h > 23) return null;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function parseSimpleAddRequest(message) {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+
+  if (!/\b(schedule|add|book|create)\b/.test(lower)) return null;
+
+  const timeMatch = normalized.match(
+    /\b(?:from|between)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|-|until)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
+  );
+  if (!timeMatch) return null;
+
+  const startPeriod = timeMatch[3];
+  const endPeriod = timeMatch[6] || startPeriod;
+  const startTime = parseTo24Hour(timeMatch[1], timeMatch[2], startPeriod);
+  const endTime = parseTo24Hour(timeMatch[4], timeMatch[5], endPeriod);
+  if (!startTime || !endTime) return null;
+
+  if (startTime >= endTime) return null;
+
+  const dayMatch = lower.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+  if (!dayMatch) return null;
+  const dayOfWeek = DAY_NAME_TO_INDEX[dayMatch[1].toLowerCase()];
+
+  const schedulePattern = /\b(?:schedule|add|book|create)\s+(.+?)\s+(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:from|between|on|at)\b|$)/i;
+  const subjectStudentMatch = normalized.match(schedulePattern);
+
+  let subject = "Unnamed";
+  let student = "Unknown";
+  if (subjectStudentMatch) {
+    subject = (subjectStudentMatch[1] || "").trim() || subject;
+    student = (subjectStudentMatch[2] || "").replace(/\s+(from|between)\b.*$/i, "").trim() || student;
+  }
+
+  if (student.toLowerCase() === "me" || student.toLowerCase() === "the student") student = "Unknown";
+
+  return {
+    action: "add",
+    student,
+    subject,
+    day_of_week: dayOfWeek,
+    start_time: startTime,
+    end_time: endTime,
+    recurring: true,
+    specific_date: null,
+    lesson_id: null,
+    reply: `Got it — scheduling ${subject || "a lesson"} with ${student} on ${DAY_NAMES[dayOfWeek]} ${startTime}-${endTime}.`,
+  };
+}
+
 async function callNim(apiKey, userMessage, lessons) {
   const lessonsSummary = lessons
     .filter((l) => l.active !== false)
@@ -82,7 +164,7 @@ async function callNim(apiKey, userMessage, lessons) {
           { role: "user", content: `CURRENT LESSONS:\n${lessonsSummary}\n\nUSER REQUEST:\n${userMessage}` },
         ],
         temperature: 0.2,
-        max_tokens: 500,
+        max_tokens: 220,
       }),
     });
   } catch (networkErr) {
@@ -138,9 +220,6 @@ async function innerHandler(event, userId) {
 
   if (event.httpMethod !== "POST") return jsonResponse(405, { error: "method not allowed" });
 
-  const apiKey = process.env.NVIDIA_NIM_API_KEY;
-  if (!apiKey) return jsonResponse(500, { error: "NVIDIA_NIM_API_KEY is not set in environment" });
-
   let body;
   try {
     body = JSON.parse(event.body || "{}");
@@ -177,16 +256,56 @@ async function innerHandler(event, userId) {
       });
     }
 
-    const action = await callNim(apiKey, body.message, lessons);
+    const nextUsage = { ...usage, count: usage.count + 1 };
+    const fastAction = parseSimpleAddRequest(body.message);
+    if (fastAction) {
+      await writeUsage(store, userId, nextUsage);
+      const action = fastAction;
+      if (action.day_of_week === null || action.day_of_week === undefined || !action.start_time || !action.end_time) {
+        return jsonResponse(200, {
+          action: { ...action, action: "unknown", reply: "I need a day and start/end time to add this lesson." },
+          applied: false,
+        });
+      }
 
-    // Count this prompt now that the NIM call has succeeded. Not awaited,
-    // since the response to the user doesn't depend on this write landing
-    // first, and every extra sequential await here is latency the person
-    // is sitting through. A failure here just means one prompt isn't
-    // counted, which is harmless.
-    writeUsage(store, userId, { ...usage, count: usage.count + 1 }).catch((err) =>
-      console.error("Failed to write usage count (non-fatal):", err)
-    );
+      const conflict = lessons.find(
+        (l) =>
+          l.active !== false &&
+          l.day_of_week === action.day_of_week &&
+          timesOverlap(l.start_time, l.end_time, action.start_time, action.end_time)
+      );
+      if (conflict) {
+        return jsonResponse(200, {
+          action: {
+            ...action,
+            action: "unknown",
+            reply: `That conflicts with ${conflict.student}'s lesson on ${DAY_NAMES[conflict.day_of_week]} ${conflict.start_time}-${conflict.end_time}.`,
+          },
+          applied: false,
+        });
+      }
+
+      const lesson = {
+        id: nextId(lessons),
+        student: action.student || "Unnamed",
+        subject: action.subject || "",
+        day_of_week: action.day_of_week,
+        start_time: action.start_time,
+        end_time: action.end_time,
+        recurring: action.recurring !== false,
+        specific_date: action.specific_date || null,
+        active: true,
+      };
+      lessons.push(lesson);
+      await writeLessons(store, lessons);
+      return jsonResponse(201, { action, applied: true, lesson });
+    }
+
+    const apiKey = process.env.NVIDIA_NIM_API_KEY;
+    if (!apiKey) return jsonResponse(500, { error: "NVIDIA_NIM_API_KEY is not set in environment" });
+
+    await writeUsage(store, userId, nextUsage);
+    const action = await callNim(apiKey, body.message, lessons);
 
     // Query / unknown: nothing to apply, just return the model's reply.
     if (action.action === "query" || action.action === "unknown" || !action.action) {
