@@ -1,7 +1,6 @@
-// Admin-only lesson management. Requires the "x-admin-password" header to
-// match ADMIN_PASSWORD. This is where manual add/edit/delete of lessons
-// lives now - the public page can only read lessons and talk to the AI
-// assistant.
+// Admin-only lesson management. Requires a valid authenticated admin session.
+// This is where manual add/edit/delete of lessons lives now - the public
+// page can only read lessons and talk to the AI assistant.
 //
 // GET    /api/admin-lessons  -> list all lessons + exceptions
 // POST   /api/admin-lessons  -> add a lesson
@@ -17,7 +16,7 @@ const {
   nextId,
   timesOverlap,
 } = require("./_store");
-const { checkAdminAuth } = require("./_admin_auth");
+const { getAdminSession } = require("./_auth");
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -36,9 +35,9 @@ function validateLesson(body) {
 }
 
 exports.handler = async (event) => {
-  const auth = checkAdminAuth(event);
-  if (!auth.ok) {
-    return jsonResponse(401, { error: "unauthorized", detail: auth.reason });
+  const adminAuth = await getAdminSession(event);
+  if (!adminAuth.ok) {
+    return jsonResponse(adminAuth.status, { error: adminAuth.reason, detail: adminAuth.reason });
   }
 
   try {

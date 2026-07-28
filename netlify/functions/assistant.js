@@ -3,14 +3,12 @@
 // no manual add form on the public page anymore. The maintainer can still
 // manage lessons directly through the admin dashboard.
 //
-// Adds a daily cap of 5 prompts PER VISITOR, tracked server-side in Blobs
-// and identified via a "visitor_id" cookie (can't be bypassed by reloading
-// or clearing localStorage; a visitor would need to clear cookies or use a
-// different browser to get a fresh bucket). Also sends a one-time-per-
-// visitor-per-day maintainer email via Resend when that visitor's cap is
-// first exceeded.
+// Adds a daily cap of 5 prompts PER authenticated user, tracked server-side
+// in Blobs. This prevents unbounded usage and gives a clear identity basis
+// for usage reporting. Also sends a one-time-per-user maintainer email via
+// Resend when that user's cap is first exceeded.
 //
-// GET  /api/assistant  -> today's usage status for this visitor, without consuming a prompt
+// GET  /api/assistant  -> today's usage status for this user, without consuming a prompt
 // POST /api/assistant  { "message": "..." } -> parse + apply via NIM
 
 const {
@@ -26,13 +24,13 @@ const {
   timesOverlap,
 } = require("./_store");
 const { notifyMaintainer } = require("./_notify");
-const { resolveVisitor } = require("./_cookies");
+const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 // Any NIM chat model works here; this one is small/fast and free-tier friendly.
 const NIM_MODEL = "meta/llama-3.1-70b-instruct";
 
-// Daily cap on assistant prompts per visitor, to prevent runaway NIM API usage.
+// Daily cap on assistant prompts per user, to prevent runaway NIM API usage.
 const DAILY_PROMPT_LIMIT = 5;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -109,22 +107,23 @@ async function callNim(apiKey, userMessage, lessons) {
 }
 
 exports.handler = async (event) => {
-  const { visitorId, setCookieHeader } = resolveVisitor(event);
-  const response = await innerHandler(event, visitorId);
-
-  if (setCookieHeader) {
-    response.headers = { ...response.headers, "Set-Cookie": setCookieHeader };
+  const user = await getSession(event);
+  if (!user) {
+    return jsonResponse(401, { error: "unauthorized", detail: "Please log in with email to use the assistant." });
   }
+
+  const userId = user.id || user.email;
+  const response = await innerHandler(event, userId);
   return response;
 };
 
-async function innerHandler(event, visitorId) {
+async function innerHandler(event, userId) {
   // GET: report today's usage without consuming a prompt. Lets the
   // frontend show "N of 5 left" and disable the input on load.
   if (event.httpMethod === "GET") {
     try {
       const store = getLessonStore(event);
-      const usage = await readUsage(store, visitorId);
+      const usage = await readUsage(store, userId);
       return jsonResponse(200, {
         limit: DAILY_PROMPT_LIMIT,
         used: usage.count,
@@ -155,17 +154,17 @@ async function innerHandler(event, visitorId) {
 
   try {
     const store = getLessonStore(event);
-    const [usage, lessons] = await Promise.all([readUsage(store, visitorId), readLessons(store)]);
+    const [usage, lessons] = await Promise.all([readUsage(store, userId), readLessons(store)]);
 
     if (usage.count >= DAILY_PROMPT_LIMIT) {
-      // Only email the maintainer once per visitor per day, the first time
-      // that visitor's cap is exceeded, not on every subsequent blocked request.
+      // Only email the maintainer once per user per day, the first time
+      // that user's cap is exceeded, not on every subsequent blocked request.
       if (!usage.maintainerNotified) {
         await notifyMaintainer({
           promptCount: usage.count,
           date: new Date().toISOString().slice(0, 10),
         });
-        await writeUsage(store, visitorId, { ...usage, maintainerNotified: true });
+        await writeUsage(store, userId, { ...usage, maintainerNotified: true });
       }
 
       return jsonResponse(200, {
@@ -185,7 +184,7 @@ async function innerHandler(event, visitorId) {
     // first, and every extra sequential await here is latency the person
     // is sitting through. A failure here just means one prompt isn't
     // counted, which is harmless.
-    writeUsage(store, visitorId, { ...usage, count: usage.count + 1 }).catch((err) =>
+    writeUsage(store, userId, { ...usage, count: usage.count + 1 }).catch((err) =>
       console.error("Failed to write usage count (non-fatal):", err)
     );
 

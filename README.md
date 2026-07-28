@@ -1,42 +1,44 @@
 # Lesson Secretary
 
 A lesson scheduling app with a public calendar view, a natural language
-assistant powered by NVIDIA's NIM API, and a password protected admin
+assistant powered by NVIDIA's NIM API, and an email-session-secured admin
 dashboard for the maintainer. Runs on Netlify with Blobs for storage, so
 there's no separate database to manage.
 
 ## How it's laid out
 
-- **Public page** (`/`): shows the calendar, read-only, plus the AI
-  assistant box. This is the only way a visitor can add, cancel, or remove
-  a lesson. There's no manual add form here anymore.
-- **Admin dashboard** (`/admin`): password protected. Lets the maintainer
-  add, edit, and delete lessons directly, and shows a live breakdown of
-  today's assistant usage per visitor.
-- **Assistant**: capped at 5 prompts per day, per visitor, tracked with a
-  cookie. Once a visitor hits the cap, the app tells them it can't help
+- **Public page** (`/`): shows the calendar and assistant chat. Visitors
+  must sign in with email + verification code before using the assistant.
+  The public page also now shows a thread of past assistant/user messages.
+- **Admin dashboard** (`/admin`): uses the same email OTP session as public
+  pages, with an admin allowlist. Lets the maintainer add, edit, and delete
+  lessons directly, and shows a live breakdown of today's assistant usage.
+- **Assistant**: capped at 5 prompts per day, per logged-in user, tracked
+  with authenticated sessions. Once a user hits the cap, the app tells them it can't help
   further today and emails the maintainer once.
 
 ## What's included
 
 - `netlify/functions/_store.js`: Blobs storage helpers (lessons,
-  exceptions, per-visitor usage counters, and a usage listing function for
+  exceptions, per-user usage counters, and a usage listing function for
   the admin dashboard)
-- `netlify/functions/_cookies.js`: reads or generates the `visitor_id`
-  cookie used for the assistant's daily limit
+- `netlify/functions/_auth.js`: email OTP issuance/verification and session
+  persistence helpers
 - `netlify/functions/_notify.js`: emails the maintainer via Resend the
-  first time a given visitor's daily cap is exceeded
-- `netlify/functions/_admin_auth.js`: checks the `x-admin-password` header
-  against `ADMIN_PASSWORD`
+  first time a given user's daily cap is exceeded
+- `netlify/functions/auth-request-code.js`: starts the email OTP flow
+- `netlify/functions/auth-verify-code.js`: verifies the code and creates a
+  login session
+- `netlify/functions/auth-session.js`: reads/writes the shared session state
 - `netlify/functions/lessons.js`: public, **read-only**. Returns the
   lesson list for the calendar view.
-- `netlify/functions/admin-lessons.js`: admin-only CRUD for lessons
-  (password protected)
+- `netlify/functions/admin-lessons.js`: admin-only CRUD for lessons using
+  session auth
 - `netlify/functions/admin-stats.js`: admin-only usage stats for today
 - `netlify/functions/assistant.js`: the NIM-powered assistant, the only
-  way public visitors can change the schedule
+  way public users can change the schedule
 - `public/index.html`: public calendar + assistant
-- `public/admin/index.html`: password gated admin dashboard
+- `public/admin/index.html`: session-gated admin dashboard
 
 ## Setup
 
@@ -50,7 +52,9 @@ npm install
 NVIDIA_NIM_API_KEY=nvapi-...      # from https://build.nvidia.com
 RESEND_API_KEY=re_...             # from https://resend.com (free tier)
 MAINTAINER_EMAIL=you@example.com  # where the "limit reached" email goes
-ADMIN_PASSWORD=choose-a-password  # protects /admin
+RESEND_FROM_EMAIL=onboarding@resend.dev # optional: defaults to onboarding@resend.dev
+ADMIN_EMAILS=admin@example.com   # comma-separated list of admin emails
+AUTH_CODE_SECRET=pick-a-long-random-secret # optional: extra hardening for OTP hashing
 ```
 
 Set these locally in a `.env` file (already gitignored, picked up
@@ -60,13 +64,14 @@ automatically by `netlify dev`), or in production with:
 netlify env:set NVIDIA_NIM_API_KEY nvapi-...
 netlify env:set RESEND_API_KEY re_...
 netlify env:set MAINTAINER_EMAIL you@example.com
-netlify env:set ADMIN_PASSWORD choose-a-password
+netlify env:set RESEND_FROM_EMAIL onboarding@resend.dev
+netlify env:set AUTH_CODE_SECRET pick-a-long-random-secret
+netlify env:set ADMIN_EMAILS admin@example.com
 ```
 
-Without `RESEND_API_KEY`/`MAINTAINER_EMAIL` set, the rate limit still
-works, it just skips the email (logged as a warning). Without
-`ADMIN_PASSWORD` set, every request to `/admin`'s API endpoints is
-rejected, since there's nothing to check the password against.
+`RESEND_API_KEY` is required for email verification flow and maintainer alerts.
+`ADMIN_EMAILS` is required for admin access; requests from non-listed users
+are rejected with `403`.
 
 ```bash
 netlify dev
@@ -144,10 +149,10 @@ or moving to Netlify's background functions for this endpoint.
    email.
 
 **Admin dashboard:**
-1. Go to `/admin`, log in with `ADMIN_PASSWORD`.
+1. Go to `/admin`, sign in with an email listed in `ADMIN_EMAILS`.
 2. Add a lesson directly, confirm it shows up on both the admin and public
    calendars.
-3. Check the usage table, it should reflect prompts used by any visitor
+3. Check the usage table, it should reflect prompts used by any logged-in user
    who has used the assistant today.
 4. Delete a lesson, confirm it disappears from both views.
 
@@ -160,12 +165,12 @@ netlify deploy --prod
 
 ## Known limitations and possible next steps
 
-- The admin password is a single shared secret sent on every request. This
-  is fine for personal/single-maintainer use, but isn't a substitute for
-  proper authentication if more than one person needs admin access, or if
-  the stakes go up.
-- The per-visitor cookie is easy to work around (clearing cookies, private
-  browsing, different browser). It's meant to catch accidental overuse,
-  not to be a hard security boundary.
+- Admin access is not protected by a shared password. It is tied to the same
+  email-session identity model as the public page, with an allowlist in
+  `ADMIN_EMAILS`.
+- The identity/session model is cookie-backed with server-side lookup.
+  It's stronger than the prior anonymous counter but not intended as a
+  hardened identity platform. Keep session/cookie settings conservative for
+  production, and rotate/expire env secrets as needed.
 - Exceptions (one-off cancellations made via the assistant) are stored but
   not yet shown on either calendar view.

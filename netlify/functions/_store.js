@@ -48,21 +48,19 @@ async function writeExceptions(store, exceptions) {
 }
 
 // Daily usage tracking for the natural-language assistant, keyed by
-// "usage:YYYY-MM-DD:<visitorId>". Per-visitor (via a cookie, see
-// _cookies.js) rather than global, so one person maxing out their 5
-// requests doesn't block anyone else. Also used to avoid spamming the
-// maintainer email more than once per visitor per day once the cap is hit.
-function todayKey(visitorId) {
-  return `usage:${new Date().toISOString().slice(0, 10)}:${visitorId}`;
+// "usage:YYYY-MM-DD:<userId>". One authenticated user should not
+// affect another user's quota.
+function todayKey(userId) {
+  return `usage:${new Date().toISOString().slice(0, 10)}:${userId}`;
 }
 
-async function readUsage(store, visitorId) {
-  const data = await store.get(todayKey(visitorId), { type: "json" });
+async function readUsage(store, userId) {
+  const data = await store.get(todayKey(userId), { type: "json" });
   return data || { count: 0, maintainerNotified: false };
 }
 
-async function writeUsage(store, visitorId, usage) {
-  await store.setJSON(todayKey(visitorId), usage);
+async function writeUsage(store, userId, usage) {
+  await store.setJSON(todayKey(userId), usage);
 }
 
 // Lists every usage key for today, for the admin dashboard's "how many
@@ -75,7 +73,7 @@ async function listTodayUsage(store) {
   for (const blob of blobs) {
     const data = await store.get(blob.key, { type: "json" });
     results.push({
-      visitorId: blob.key.slice(prefix.length),
+      userId: blob.key.slice(prefix.length),
       count: data?.count ?? 0,
       maintainerNotified: data?.maintainerNotified ?? false,
     });

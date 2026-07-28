@@ -14,6 +14,7 @@
     --text: #1f2430;
     --muted: #6b7280;
     --danger: #dc2626;
+    --success: #0f7a4f;
   }
   * { box-sizing: border-box; }
   body {
@@ -43,6 +44,99 @@
     padding: 16px;
     margin-bottom: 24px;
   }
+
+  .hidden { display: none !important; }
+
+  .auth-box h2 { margin: 0 0 10px; font-size: 1rem; }
+  .auth-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .auth-box input {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.95rem;
+  }
+  .auth-box button {
+    padding: 10px 14px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.92rem;
+    cursor: pointer;
+  }
+  .auth-status {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 8px;
+    min-height: 1.1em;
+  }
+
+  .chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    gap: 10px;
+    font-size: 0.85rem;
+  }
+  .chat-meta { color: var(--muted); }
+  .chat-meta .email { font-weight: 600; color: var(--text); }
+  .chat-header button {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .assistant-conversation {
+    min-height: 140px;
+    max-height: 380px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    background: #fbfcff;
+    margin-bottom: 10px;
+  }
+  .message {
+    margin-bottom: 10px;
+    line-height: 1.35;
+    font-size: 0.9rem;
+  }
+  .bubble {
+    border-radius: 10px;
+    padding: 8px 10px;
+    display: inline-block;
+    max-width: 90%;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .message.user .bubble {
+    background: #dfeafe;
+    color: #1d3f90;
+  }
+  .message.assistant .bubble {
+    background: var(--card);
+    border: 1px solid var(--border);
+  }
+  .message.error .bubble {
+    background: #fdecea;
+    border-color: #fecaca;
+    color: var(--danger);
+  }
+  .message.system .bubble {
+    background: #eef6ff;
+    border: 1px solid #cfe2ff;
+    color: var(--muted);
+  }
+  .message code { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
   .assistant-box form { display: flex; gap: 8px; }
   .assistant-box input[type="text"] {
     flex: 1;
@@ -51,7 +145,7 @@
     border-radius: 8px;
     font-size: 0.95rem;
   }
-  .assistant-box button {
+  .assistant-box button.send-btn {
     padding: 10px 18px;
     background: var(--accent);
     color: white;
@@ -61,22 +155,14 @@
     cursor: pointer;
   }
   .assistant-box button:disabled { opacity: 0.6; cursor: default; }
-  .assistant-reply {
-    margin-top: 12px;
-    padding: 10px 12px;
-    background: var(--accent-light);
-    border-radius: 8px;
-    font-size: 0.9rem;
-    display: none;
-  }
-  .assistant-reply.show { display: block; }
-  .assistant-reply.error { background: #fdecea; color: var(--danger); }
+
   .assistant-usage {
     margin-top: 8px;
     font-size: 0.78rem;
     color: var(--muted);
   }
   .assistant-usage.low { color: var(--danger); }
+  .assistant-usage.ok { color: var(--success); }
 
   .calendar {
     display: grid;
@@ -129,19 +215,38 @@
 
 <header>
   <h1>Lesson Secretary</h1>
-  <p>Weekly lesson schedule. Ask the assistant below to add, cancel, or check a lesson.</p>
+  <p>Weekly lesson schedule. Sign in with email, then use the assistant to add, cancel, or check a lesson.</p>
 </header>
 
 <main>
   <div class="load-error" id="load-error"></div>
 
   <div class="assistant-box">
-    <form id="assistant-form">
-      <input type="text" id="assistant-input" placeholder='e.g. "add algebra with Sam every Tuesday 4-5pm"' autocomplete="off" />
-      <button type="submit" id="assistant-submit">Send</button>
-    </form>
-    <div class="assistant-reply" id="assistant-reply"></div>
-    <div class="assistant-usage" id="assistant-usage"></div>
+    <section class="auth-box" id="auth-view">
+      <h2>Sign in to continue</h2>
+      <form id="email-form" class="auth-row">
+        <input id="email-input" type="email" placeholder="you@example.com" required autocomplete="email" />
+        <button type="submit" id="request-btn">Send code</button>
+      </form>
+      <form id="verify-form" class="auth-row hidden">
+        <input id="code-input" type="text" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter 6-digit code" required />
+        <button type="submit" id="verify-btn">Verify</button>
+      </form>
+      <div class="auth-status" id="auth-status"></div>
+    </section>
+
+    <section id="chat-view" class="hidden">
+      <div class="chat-header">
+        <div class="chat-meta">Signed in as <span id="chat-user" class="email"></span></div>
+        <button id="logout-btn" type="button">Log out</button>
+      </div>
+      <div id="conversation" class="assistant-conversation" aria-live="polite"></div>
+      <form id="assistant-form">
+        <input type="text" id="assistant-input" placeholder='e.g. "add algebra with Sam every Tuesday 4-5pm"' autocomplete="off" />
+        <button class="send-btn" type="submit" id="assistant-submit">Send</button>
+      </form>
+      <div class="assistant-usage" id="assistant-usage"></div>
+    </section>
   </div>
 
   <div class="calendar" id="calendar"></div>
@@ -149,6 +254,10 @@
 
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+const state = {
+  user: null,
+};
 
 function formatTime(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
@@ -159,7 +268,7 @@ function formatTime(hhmm) {
 
 function escapeHtml(str) {
   const div = document.createElement("div");
-  div.textContent = str;
+  div.textContent = String(str);
   return div.innerHTML;
 }
 
@@ -173,13 +282,57 @@ function clearLoadError() {
   document.getElementById("load-error").classList.remove("show");
 }
 
-async function fetchLessons() {
-  const res = await fetch("/api/lessons");
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.detail || data.error || `Failed to load lessons (HTTP ${res.status})`);
+function appendMessage(kind, text, isError = false) {
+  const conversation = document.getElementById("conversation");
+  const row = document.createElement("div");
+  row.className = `message ${kind}${isError ? " error" : ""}`;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  conversation.appendChild(row);
+  conversation.scrollTop = conversation.scrollHeight;
+  return row;
+}
+
+function setAuthError(message) {
+  const status = document.getElementById("auth-status");
+  status.textContent = message;
+  if (message) status.style.color = "var(--danger)";
+}
+
+function setAuthInfo(message) {
+  const status = document.getElementById("auth-status");
+  status.textContent = message || "";
+  status.style.color = "var(--muted)";
+}
+
+function setSessionView(showSignedIn, user) {
+  const authView = document.getElementById("auth-view");
+  const chatView = document.getElementById("chat-view");
+  const conversation = document.getElementById("conversation");
+  const usage = document.getElementById("assistant-usage");
+  if (showSignedIn) {
+    authView.classList.add("hidden");
+    chatView.classList.remove("hidden");
+    document.getElementById("chat-user").textContent = user.email;
+    usage.textContent = "";
+    state.user = user;
+    if (!conversation.dataset.ready) {
+      appendMessage("system", `You are signed in as ${user.email}. You can now chat with the assistant.`);
+      conversation.dataset.ready = "1";
+    }
+  } else {
+    authView.classList.remove("hidden");
+    chatView.classList.add("hidden");
+    document.getElementById("verify-form").classList.add("hidden");
+    document.getElementById("code-input").value = "";
+    document.getElementById("email-input").value = "";
+    setAuthInfo("");
+    conversation.innerHTML = "";
+    conversation.removeAttribute("data-ready");
+    state.user = null;
   }
-  return data;
 }
 
 function renderCalendar(data) {
@@ -226,7 +379,11 @@ function renderCalendar(data) {
 
 async function refresh() {
   try {
-    const data = await fetchLessons();
+    const res = await fetch("/api/lessons");
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || `Failed to load lessons (HTTP ${res.status})`);
+    }
     clearLoadError();
     renderCalendar(data);
   } catch (err) {
@@ -235,21 +392,16 @@ async function refresh() {
   }
 }
 
-// Assistant form: the only way lessons get added, cancelled, or removed
-// from this page. Rate limited to 5 requests/day per visitor, tracked
-// server-side via a cookie.
-const assistantForm = document.getElementById("assistant-form");
-const assistantInput = document.getElementById("assistant-input");
-const assistantSubmit = document.getElementById("assistant-submit");
-const assistantReply = document.getElementById("assistant-reply");
-const assistantUsage = document.getElementById("assistant-usage");
-
 function renderUsage(usage) {
+  const assistantUsage = document.getElementById("assistant-usage");
+  const assistantInput = document.getElementById("assistant-input");
+  const assistantSubmit = document.getElementById("assistant-submit");
   if (!usage) return;
   assistantUsage.textContent = usage.limitReached
     ? `Daily limit reached (${usage.used}/${usage.limit}). Resets at midnight.`
     : `${usage.remaining} of ${usage.limit} requests left today.`;
   assistantUsage.classList.toggle("low", usage.remaining <= 1);
+  assistantUsage.classList.toggle("ok", usage.remaining > 1);
 
   if (usage.limitReached) {
     assistantInput.disabled = true;
@@ -257,15 +409,20 @@ function renderUsage(usage) {
     assistantInput.placeholder = "Daily limit reached, try again tomorrow";
   } else {
     assistantInput.disabled = false;
+    assistantSubmit.disabled = false;
     assistantInput.placeholder = 'e.g. "add algebra with Sam every Tuesday 4-5pm"';
   }
 }
 
 async function fetchUsage() {
   try {
-    const res = await fetch("/api/assistant");
+    const res = await fetch("/api/assistant", { credentials: "include" });
     const data = await res.json();
     if (!res.ok) {
+      if (res.status === 401) {
+        setSessionView(false);
+        return;
+      }
       console.error("Failed to load usage:", data.detail || data.error);
       return;
     }
@@ -275,73 +432,168 @@ async function fetchUsage() {
   }
 }
 
+async function refreshSession() {
+  try {
+    const res = await fetch("/api/auth-session", { credentials: "include" });
+    if (!res.ok) {
+      setSessionView(false);
+      return;
+    }
+    const data = await res.json();
+    if (!data.authenticated) {
+      setSessionView(false);
+      return;
+    }
+    setSessionView(true, data.user);
+    fetchUsage();
+  } catch (err) {
+    console.error("Failed to check session:", err);
+    setSessionView(false);
+  }
+}
+
+document.getElementById("email-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("email-input").value.trim();
+  const btn = document.getElementById("request-btn");
+  setAuthInfo("");
+  if (!email) {
+    setAuthError("Enter your email first.");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Sending...";
+  try {
+    const res = await fetch("/api/auth-request-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Could not send code.");
+    setAuthInfo(`A 6-digit code was sent to ${email}.`);
+    document.getElementById("verify-form").classList.remove("hidden");
+  } catch (err) {
+    setAuthError(err.message || "Could not send code.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Send code";
+  }
+});
+
+document.getElementById("verify-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("email-input").value.trim();
+  const code = document.getElementById("code-input").value.trim();
+  const btn = document.getElementById("verify-btn");
+  if (!email || !code) {
+    setAuthError("Email and code are required.");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Verifying...";
+  try {
+    const res = await fetch("/api/auth-verify-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, code }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Could not verify code.");
+    setSessionView(true, data.user);
+    appendMessage("system", `Signed in successfully as ${data.user.email}.`, false);
+    fetchUsage();
+  } catch (err) {
+    setAuthError(err.message || "Could not verify code.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Verify";
+  }
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  try {
+    await fetch("/api/auth-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action: "logout" }),
+    });
+  } finally {
+    setSessionView(false);
+  }
+});
+
+const assistantForm = document.getElementById("assistant-form");
+const assistantInput = document.getElementById("assistant-input");
+const assistantSubmit = document.getElementById("assistant-submit");
+
 assistantForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const message = assistantInput.value.trim();
-  if (!message) return;
+  if (!message || !state.user) return;
 
-  assistantSubmit.disabled = true;
-  assistantSubmit.textContent = "Thinking...";
-  assistantReply.classList.remove("show", "error");
+  const formSubmit = assistantSubmit;
+  appendMessage("user", message);
+  const assistantRow = appendMessage("assistant", "Thinking...");
+  assistantInput.value = "";
+  formSubmit.disabled = true;
+  formSubmit.textContent = "Thinking...";
+  assistantInput.disabled = true;
 
-  let res;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 25000);
-    res = await fetch("/api/assistant", {
+    const res = await fetch("/api/assistant", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
+    const data = await res.json();
+
+    assistantRow.querySelector(".bubble").textContent = "";
+    if (!res.ok) {
+      if (res.status === 401) {
+        setSessionView(false);
+        assistantRow.querySelector(".bubble").textContent = "Session expired. Please sign in again.";
+        assistantRow.classList.add("error");
+        return;
+      }
+      assistantRow.querySelector(".bubble").textContent = data.detail || data.error || "Something went wrong.";
+      assistantRow.classList.add("error");
+      return;
+    }
+
+    const reply = data.action?.reply || (data.applied ? "Done." : "Okay.");
+    const isLimitReached = data.limitReached;
+    assistantRow.querySelector(".bubble").textContent = reply;
+    if (isLimitReached) assistantRow.classList.add("error");
+
+    if (data.applied) {
+      await refresh();
+    }
   } catch (err) {
     const timedOut = err.name === "AbortError";
     console.error("Network-level failure calling /api/assistant:", err);
-    assistantReply.textContent = timedOut
+    const messageText = timedOut
       ? "The assistant took too long to respond, try a shorter or simpler request."
       : "Network error, please check your connection and try again.";
-    assistantReply.classList.add("show", "error");
-    assistantSubmit.textContent = "Send";
-    fetchUsage();
-    return;
-  }
-
-  let data;
-  try {
-    data = await res.json();
-  } catch (err) {
-    // The request completed but the response body wasn't valid JSON, most
-    // likely the function was cut off mid-response (e.g. a timeout on a
-    // slow NIM call) or crashed after partially writing output.
-    console.error("Failed to parse response from /api/assistant:", err);
-    assistantReply.textContent = `The assistant's response couldn't be read (HTTP ${res.status}). It may have timed out, try a shorter or simpler request.`;
-    assistantReply.classList.add("show", "error");
-    assistantSubmit.textContent = "Send";
-    fetchUsage();
-    return;
-  }
-
-  try {
-    if (!res.ok) {
-      assistantReply.textContent = data.detail || data.error || "Something went wrong.";
-      assistantReply.classList.add("show", "error");
-    } else {
-      assistantReply.textContent = data.action?.reply || (data.applied ? "Done." : "Okay.");
-      assistantReply.classList.add("show", data.limitReached ? "error" : "");
-      if (data.applied) {
-        assistantInput.value = "";
-        refresh();
-      }
-    }
+    assistantRow.querySelector(".bubble").textContent = messageText;
+    assistantRow.classList.add("error");
   } finally {
-    assistantSubmit.textContent = "Send";
+    formSubmit.disabled = false;
+    formSubmit.textContent = "Send";
+    assistantInput.disabled = false;
     fetchUsage();
   }
 });
 
 refresh();
-fetchUsage();
+refreshSession();
 </script>
 
 </body>

@@ -33,7 +33,7 @@
   main { max-width: 1000px; margin: 0 auto; padding: 24px; }
 
   .login-box {
-    max-width: 360px;
+    max-width: 520px;
     margin: 60px auto;
     background: var(--card);
     border: 1px solid var(--border);
@@ -41,23 +41,33 @@
     padding: 24px;
   }
   .login-box h2 { margin: 0 0 12px; font-size: 1.05rem; }
+  .auth-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .auth-row input,
   .login-box input {
-    width: 100%;
     padding: 10px 12px;
     border: 1px solid var(--border);
     border-radius: 8px;
     font-size: 0.95rem;
-    margin-bottom: 10px;
+    flex: 1;
   }
   .login-box button {
-    width: 100%;
-    padding: 10px;
+    padding: 10px 14px;
     background: var(--accent);
     color: white;
     border: none;
     border-radius: 8px;
-    font-size: 0.95rem;
+    font-size: 0.92rem;
     cursor: pointer;
+  }
+  .login-status {
+    font-size: 0.8rem;
+    margin-top: 8px;
+    color: var(--muted);
+    min-height: 1.1em;
   }
   .login-error {
     color: var(--danger);
@@ -191,6 +201,26 @@
   }
   .error-banner.show { display: block; }
 
+  .dashboard-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .admin-meta {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  .dashboard-head button {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
   @media (max-width: 800px) {
     .calendar { grid-template-columns: repeat(2, 1fr); }
   }
@@ -205,13 +235,25 @@
 
 <main>
   <div id="login-view" class="login-box">
-    <h2>Admin login</h2>
-    <input type="password" id="password-input" placeholder="Admin password" autocomplete="current-password" />
-    <button id="login-btn">Log in</button>
+    <h2>Admin sign in</h2>
+    <form id="email-form" class="auth-row">
+      <input id="email-input" type="email" placeholder="you@example.com" required autocomplete="email" />
+      <button type="submit" id="request-btn">Send code</button>
+    </form>
+    <form id="verify-form" class="auth-row hidden">
+      <input id="code-input" type="text" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter 6-digit code" required />
+      <button type="submit" id="verify-btn">Verify</button>
+    </form>
+    <div class="login-status" id="login-status"></div>
     <div class="login-error" id="login-error"></div>
   </div>
 
   <div id="dashboard-view" class="hidden">
+    <div class="dashboard-head">
+      <div class="admin-meta">Signed in as <strong id="admin-user"></strong></div>
+      <button type="button" id="logout-btn">Log out</button>
+    </div>
+
     <div class="error-banner" id="error-banner"></div>
 
     <div class="stats-row" id="stats-row"></div>
@@ -219,7 +261,7 @@
     <h2 class="section-heading">Today's assistant usage</h2>
     <table class="usage-table" id="usage-table">
       <thead>
-        <tr><th>Visitor</th><th>Prompts used</th><th>Maintainer notified</th></tr>
+        <tr><th>User</th><th>Prompts used</th><th>Maintainer notified</th></tr>
       </thead>
       <tbody id="usage-tbody"></tbody>
     </table>
@@ -253,7 +295,9 @@
 
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-let adminPassword = null;
+const state = {
+  user: null,
+};
 
 function formatTime(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
@@ -278,50 +322,164 @@ function clearError() {
   document.getElementById("error-banner").classList.remove("show");
 }
 
+function setAuthStatus(message) {
+  const el = document.getElementById("login-status");
+  el.textContent = message || "";
+  el.style.color = "var(--muted)";
+}
+
+function setAuthError(message) {
+  const el = document.getElementById("login-error");
+  el.textContent = message;
+  if (message) el.classList.add("show");
+  else el.classList.remove("show");
+}
+
+function setSessionView(authorized, user) {
+  const loginView = document.getElementById("login-view");
+  const dashboardView = document.getElementById("dashboard-view");
+
+  if (!authorized) {
+    loginView.classList.remove("hidden");
+    dashboardView.classList.add("hidden");
+    document.getElementById("verify-form").classList.add("hidden");
+    document.getElementById("code-input").value = "";
+    document.getElementById("email-input").value = "";
+    state.user = null;
+    return;
+  }
+
+  state.user = user;
+  document.getElementById("admin-user").textContent = user.email;
+  loginView.classList.add("hidden");
+  dashboardView.classList.remove("hidden");
+  refreshAll();
+}
+
 async function adminFetch(url, options = {}) {
   const res = await fetch(url, {
     ...options,
+    credentials: "include",
     headers: {
       ...(options.headers || {}),
-      "x-admin-password": adminPassword,
     },
   });
   const data = await res.json();
   if (!res.ok) {
+    if (res.status === 401) {
+      setSessionView(false);
+    } else if (res.status === 403) {
+      setAuthError("Signed in, but this account is not authorized to access admin.");
+      setSessionView(false);
+    }
     throw new Error(data.detail || data.error || `Request failed (HTTP ${res.status})`);
   }
   return data;
 }
 
-// Login
-document.getElementById("login-btn").addEventListener("click", async () => {
-  const pwInput = document.getElementById("password-input");
-  const loginError = document.getElementById("login-error");
-  const candidate = pwInput.value;
-  loginError.classList.remove("show");
-
+async function refreshSession() {
   try {
-    // Verify the password by hitting a real admin endpoint. If it works,
-    // we know the password is correct.
-    const res = await fetch("/api/admin-stats", {
-      headers: { "x-admin-password": candidate },
-    });
+    const res = await fetch("/api/auth-session", { credentials: "include" });
     if (!res.ok) {
-      const data = await res.json();
-      throw new Error(data.detail || "Incorrect password");
+      setSessionView(false);
+      return;
     }
-    adminPassword = candidate;
-    document.getElementById("login-view").classList.add("hidden");
-    document.getElementById("dashboard-view").classList.remove("hidden");
-    refreshAll();
+    const data = await res.json();
+    if (!data.authenticated || !data.admin) {
+      if (data.authenticated && !data.admin) {
+        setAuthError("Signed in, but this account is not authorized to access admin.");
+      }
+      setSessionView(false);
+      return;
+    }
+    setSessionView(true, data.user);
   } catch (err) {
-    loginError.textContent = err.message;
-    loginError.classList.add("show");
+    setSessionView(false);
+  }
+}
+
+document.getElementById("email-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("email-input").value.trim();
+  const btn = document.getElementById("request-btn");
+
+  setAuthStatus("");
+  setAuthError("");
+  if (!email) {
+    setAuthError("Enter your email first.");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Sending...";
+  try {
+    const res = await fetch("/api/auth-request-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Could not send code.");
+    setAuthStatus(`A 6-digit code was sent to ${email}.`);
+    document.getElementById("verify-form").classList.remove("hidden");
+  } catch (err) {
+    setAuthError(err.message || "Could not send code.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Send code";
   }
 });
 
-document.getElementById("password-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("login-btn").click();
+document.getElementById("verify-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("email-input").value.trim();
+  const code = document.getElementById("code-input").value.trim();
+  const btn = document.getElementById("verify-btn");
+  if (!email || !code) {
+    setAuthError("Email and code are required.");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Verifying...";
+  try {
+    const res = await fetch("/api/auth-verify-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, code }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Could not verify code.");
+    const sessionRes = await fetch("/api/auth-session", { credentials: "include" });
+    if (!sessionRes.ok) throw new Error("Could not read session.");
+    const sessionData = await sessionRes.json();
+    if (!sessionData.admin) {
+      setAuthError("Signed in, but this account is not authorized to access admin.");
+      setSessionView(false);
+      return;
+    }
+    setSessionView(true, data.user);
+    clearError();
+  } catch (err) {
+    setAuthError(err.message || "Could not verify code.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Verify";
+  }
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  try {
+    await fetch("/api/auth-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action: "logout" }),
+    });
+  } finally {
+    setSessionView(false);
+  }
 });
 
 // Stats
@@ -330,9 +488,9 @@ async function refreshStats() {
     const data = await adminFetch("/api/admin-stats");
     const statsRow = document.getElementById("stats-row");
     statsRow.innerHTML = `
-      <div class="stat-card"><div class="value">${data.totalVisitorsToday}</div><div class="label">Visitors today</div></div>
+      <div class="stat-card"><div class="value">${data.totalVisitorsToday}</div><div class="label">Users today</div></div>
       <div class="stat-card"><div class="value">${data.totalPromptsToday}</div><div class="label">Total prompts today</div></div>
-      <div class="stat-card"><div class="value">${data.visitorsAtLimit}</div><div class="label">Visitors at daily limit</div></div>
+      <div class="stat-card"><div class="value">${data.visitorsAtLimit}</div><div class="label">Users at daily limit</div></div>
     `;
 
     const tbody = document.getElementById("usage-tbody");
@@ -343,7 +501,7 @@ async function refreshStats() {
       data.usage.forEach((u) => {
         const row = document.createElement("tr");
         row.innerHTML = `
-          <td>${escapeHtml(u.visitorId.slice(0, 8))}…</td>
+          <td>${escapeHtml((u.userId || u.visitorId || "").slice(0, 8))}…</td>
           <td>${u.count} / 5</td>
           <td>${u.maintainerNotified ? "Yes" : "No"}</td>
         `;
@@ -447,6 +605,8 @@ document.getElementById("manual-form").addEventListener("submit", async (e) => {
     showError(`Couldn't add lesson: ${err.message}`);
   }
 });
+
+refreshSession();
 </script>
 
 </body>
