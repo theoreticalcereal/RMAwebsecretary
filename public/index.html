@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Lesson Secretary (Stage 1 — UI Shell)</title>
+<title>Lesson Secretary (Stage 5 — Rate Limited)</title>
 <style>
   :root {
     --border: #d8dee4;
@@ -76,6 +76,13 @@
     display: none;
   }
   .assistant-reply.show { display: block; }
+  .assistant-reply.error { background: #fdecea; color: var(--danger); }
+  .assistant-usage {
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .assistant-usage.low { color: var(--danger); }
 
   .calendar {
     display: grid;
@@ -156,9 +163,13 @@
 </head>
 <body>
 
+<div class="stage-banner">
+  Stage 5 (final): Assistant is capped at 5 requests/day, tracked server-side. Once hit, further requests are blocked and the maintainer is emailed once.
+</div>
+
 <header>
   <h1>Lesson Secretary</h1>
-  <p>Weekly lesson schedule: type a request below, or add lessons manually.</p>
+  <p>Weekly lesson schedule — add lessons manually below.</p>
 </header>
 
 <main>
@@ -168,6 +179,7 @@
       <button type="submit" id="assistant-submit">Send</button>
     </form>
     <div class="assistant-reply" id="assistant-reply"></div>
+    <div class="assistant-usage" id="assistant-usage"></div>
   </div>
 
   <div class="calendar" id="calendar"></div>
@@ -198,13 +210,11 @@
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-// STAGE 1: hardcoded sample data standing in for the backend
-// whole array cleaned once AI backend added
-let sampleLessons = [
-  { id: 1, student: "Sam", subject: "Cello", day_of_week: 1, start_time: "16:00", end_time: "17:00", active: true },
-  { id: 2, student: "Mia", subject: "Piano", day_of_week: 3, start_time: "17:00", end_time: "18:00", active: true },
-  { id: 3, student: "Jordan", subject: "Violin", day_of_week: 1, start_time: "18:00", end_time: "19:00", active: true },
-];
+async function fetchLessons() {
+  const res = await fetch("/api/lessons");
+  if (!res.ok) throw new Error("Failed to load lessons");
+  return res.json();
+}
 
 function formatTime(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
@@ -219,13 +229,17 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function renderCalendar() {
+function renderCalendar(data) {
   const cal = document.getElementById("calendar");
   cal.innerHTML = "";
 
   const byDay = {};
   for (let i = 0; i < 7; i++) byDay[i] = [];
-  sampleLessons.filter((l) => l.active !== false).forEach((l) => byDay[l.day_of_week].push(l));
+
+  data.lessons
+    .filter((l) => l.active !== false)
+    .forEach((l) => byDay[l.day_of_week].push(l));
+
   for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   DAY_NAMES.forEach((name, idx) => {
@@ -246,7 +260,7 @@ function renderCalendar() {
         const card = document.createElement("div");
         card.className = "lesson-card";
         card.innerHTML = `
-          <button class="del-btn" title="Delete (Stage 1: local only)" data-id="${l.id}">✕</button>
+          <button class="del-btn" title="Delete" data-id="${l.id}">✕</button>
           <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
           <span class="student">${escapeHtml(l.student)}</span>
           ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
@@ -258,40 +272,127 @@ function renderCalendar() {
   });
 
   cal.querySelectorAll(".del-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.id);
-      sampleLessons = sampleLessons.filter((l) => l.id !== id);
-      renderCalendar();
+      if (!confirm("Delete this lesson?")) return;
+      await fetch("/api/lessons", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      refresh();
     });
   });
 }
 
-// Manual add form for stage 1: just pushes into the local array, nothing persists
-document.getElementById("manual-form").addEventListener("submit", (e) => {
+async function refresh() {
+  try {
+    const data = await fetchLessons();
+    renderCalendar(data);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// Manual add form — now hitting the real backend from Stage 3 onward.
+document.getElementById("manual-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const newId = sampleLessons.length ? Math.max(...sampleLessons.map((l) => l.id)) + 1 : 1;
-  sampleLessons.push({
-    id: newId,
+  const body = {
     student: document.getElementById("m-student").value,
     subject: document.getElementById("m-subject").value,
     day_of_week: Number(document.getElementById("m-day").value),
     start_time: document.getElementById("m-start").value,
     end_time: document.getElementById("m-end").value,
-    active: true,
+    recurring: true,
+  };
+  const res = await fetch("/api/lessons", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.error || (data.errors && data.errors.join(", ")) || "Failed to add lesson");
+    return;
+  }
   e.target.reset();
-  renderCalendar();
+  refresh();
 });
 
-// Assistant form — Stage 1: visual only, no AI call yet.
-document.getElementById("assistant-form").addEventListener("submit", (e) => {
+// Assistant form — Stage 5: rate-limited to 5 requests/day, tracked server-side.
+const assistantForm = document.getElementById("assistant-form");
+const assistantInput = document.getElementById("assistant-input");
+const assistantSubmit = document.getElementById("assistant-submit");
+const assistantReply = document.getElementById("assistant-reply");
+const assistantUsage = document.getElementById("assistant-usage");
+
+function renderUsage(usage) {
+  if (!usage) return;
+  assistantUsage.textContent = usage.limitReached
+    ? `Daily limit reached (${usage.used}/${usage.limit}) — resets at midnight.`
+    : `${usage.remaining} of ${usage.limit} requests left today.`;
+  assistantUsage.classList.toggle("low", usage.remaining <= 1);
+
+  if (usage.limitReached) {
+    assistantInput.disabled = true;
+    assistantSubmit.disabled = true;
+    assistantInput.placeholder = "Daily limit reached — try again tomorrow";
+  } else {
+    assistantInput.disabled = false;
+    assistantInput.placeholder = 'e.g. "add algebra with Sam every Tuesday 4-5pm"';
+  }
+}
+
+async function fetchUsage() {
+  try {
+    const res = await fetch("/api/assistant");
+    if (!res.ok) return;
+    const usage = await res.json();
+    renderUsage(usage);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+assistantForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const reply = document.getElementById("assistant-reply");
-  reply.textContent = "(Stage 1 placeholder — this box isn't wired to anything yet.)";
-  reply.classList.add("show");
+  const message = assistantInput.value.trim();
+  if (!message) return;
+
+  assistantSubmit.disabled = true;
+  assistantSubmit.textContent = "Thinking...";
+  assistantReply.classList.remove("show", "error");
+
+  try {
+    const res = await fetch("/api/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      assistantReply.textContent = data.error || "Something went wrong.";
+      assistantReply.classList.add("show", "error");
+    } else {
+      assistantReply.textContent = data.action?.reply || (data.applied ? "Done." : "Okay.");
+      assistantReply.classList.add("show", data.limitReached ? "error" : "");
+      if (data.applied) {
+        assistantInput.value = "";
+        refresh();
+      }
+    }
+  } catch (err) {
+    assistantReply.textContent = "Network error — please try again.";
+    assistantReply.classList.add("show", "error");
+  } finally {
+    assistantSubmit.textContent = "Send";
+    fetchUsage();
+  }
 });
 
-renderCalendar();
+refresh();
+fetchUsage();
 </script>
 
 </body>
