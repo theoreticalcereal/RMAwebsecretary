@@ -575,7 +575,7 @@ function parseSimpleRescheduleRequest(message) {
 
   const subjectMatch = normalized.match(/\b(?:reschedule|move|shift|postpone|change)\s+([a-zA-Z][a-zA-Z'’.\- ]{1,40})\s+(?:with|for)/i);
   const studentMatch = normalized.match(/\b(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:on|at|from|to|for|between|until)\b|$)/i);
-  const lessonIdMatch = normalized.match(/\b(?:lesson\s*)?(?:id)?\s*(\d+)\b/i);
+  const lessonIdMatch = normalized.match(/\b(?:lesson\s*(?:id\s*)?|id\s*)(\d+)\b/i);
 
   return {
     action: "reschedule",
