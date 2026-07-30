@@ -73,6 +73,21 @@ netlify env:set ADMIN_EMAILS admin@example.com
 `ADMIN_EMAILS` is required for admin access; requests from non-listed users
 are rejected with `403`.
 
+### Assistant reasoning allocation
+
+The NIM assistant uses Netlify-oriented defaults baked into
+`netlify/functions/assistant.js`:
+
+- Full assistant parse timeout: 9 seconds
+- Reason-only extraction timeout: 9 seconds
+- Full assistant response cap: 1536 tokens
+- Reason-only response cap: 256 tokens
+
+These values intentionally stay below a 10 second synchronous Netlify
+function window, so the app can return a graceful timeout response instead
+of being cut off by the platform. Raising them further is only useful on a
+Netlify plan or function mode with a longer execution window.
+
 ```bash
 netlify dev
 ```
@@ -125,12 +140,9 @@ Two things address this directly:
   `readLessons` run together instead of one after another) and no longer
   waits on the final usage-count write before responding, which cuts the
   number of sequential round-trips in the request.
-- The frontend now sets an explicit 25 second timeout on the request and
-  distinguishes three different failure points instead of lumping them
-  into one message: a genuine network failure, a timeout, and a response
-  that came back but couldn't be parsed as JSON. Whichever one happens,
-  you'll see a message that says which, instead of a generic "network
-  error" regardless of cause.
+- `assistant.js` gives the NIM call up to 9 seconds, which is close to the
+  full synchronous Netlify free-tier window but still leaves room for the
+  function to return a JSON timeout response.
 
 If you still see this after these changes, check your function's actual
 duration in the Netlify dashboard's function logs. Netlify's free tier

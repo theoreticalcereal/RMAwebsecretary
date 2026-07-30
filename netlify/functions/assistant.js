@@ -25,8 +25,16 @@ const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NIM_MODEL = "meta/llama-3.3-70b-instruct";
-const NIM_TIMEOUT_MS = 45000;
-const NIM_REASON_TIMEOUT_MS = 15000;
+const AI_DEFAULTS = Object.freeze({
+  requestTimeoutMs: 9000,
+  reasonTimeoutMs: 9000,
+  maxTokens: 1536,
+  reasonMaxTokens: 256,
+});
+const NIM_TIMEOUT_MS = AI_DEFAULTS.requestTimeoutMs;
+const NIM_REASON_TIMEOUT_MS = AI_DEFAULTS.reasonTimeoutMs;
+const NIM_MAX_TOKENS = AI_DEFAULTS.maxTokens;
+const NIM_REASON_MAX_TOKENS = AI_DEFAULTS.reasonMaxTokens;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAY_NAME_TO_INDEX = {
@@ -688,13 +696,52 @@ async function parseActionTwoStage(message, lessons, store, requiresAiReason) {
     return { action: stage1, reason: "", usedAi: false };
   }
 
-  if (!requiresAiReason && stage1 && isFastActionComplete(stage1) && stage1.action !== "reschedule") {
-    return { action: enrichParsedAction(stage1, lessons), reason: "", usedAi: false };
+  if (stage1 && isFastActionComplete(stage1)) {
+    const quickAction = enrichParsedAction(stage1, lessons);
+
+    if (!requiresAiReason) {
+      return { action: quickAction, reason: "", usedAi: false };
+    }
+
+    const fastReason = inferReasonFromUserMessage(message);
+    if (fastReason) {
+      const withReason = cloneAction(quickAction);
+      withReason.reason = fastReason;
+      return { action: withReason, reason: fastReason, usedAi: false };
+    }
   }
 
   const apiKey = process.env.NVIDIA_NIM_API_KEY;
   if (!apiKey) {
     throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
+  }
+
+  if (stage1 && isFastActionComplete(stage1) && requiresAiReason) {
+    try {
+      const stage2 = await parseActionFromAi(message, lessons, store, true);
+      const resolvedAction = enrichParsedAction(stage2 || stage1 || { action: "unknown", reason: null }, lessons);
+      const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
+      const reason = inferredReason || inferReasonFromUserMessage(message);
+
+      if (resolvedAction) {
+        resolvedAction.reason = reason || null;
+      }
+
+      return {
+        action: resolvedAction,
+        reason: reason,
+        usedAi: true,
+      };
+    } catch (err) {
+      if (err.rateLimited) throw err;
+      const quickAction = enrichParsedAction(stage1, lessons);
+      if (quickAction) {
+        const fastReason = inferReasonFromUserMessage(message) || null;
+        quickAction.reason = fastReason;
+        return { action: quickAction, reason: fastReason || "", usedAi: true };
+      }
+      throw err;
+    }
   }
 
   const stage2 = await parseActionFromAi(message, lessons, store, true);
@@ -800,7 +847,7 @@ async function callNim(apiKey, userMessage, lessons, options = {}) {
           { role: "user", content: `CURRENT LESSONS:\n${lessonsSummary}\n\nUSER REQUEST:\n${userMessage}` },
         ],
         temperature: 0.2,
-        max_tokens: 1024,
+        max_tokens: NIM_MAX_TOKENS,
       }),
     });
   } catch (networkErr) {
@@ -858,7 +905,7 @@ async function inferReasonOnly(apiKey, userMessage) {
           },
         ],
         temperature: 0.1,
-        max_tokens: 120,
+        max_tokens: NIM_REASON_MAX_TOKENS,
       }),
     });
   } catch (networkErr) {
@@ -922,6 +969,10 @@ exports.handler = async (event) => {
   }
 
   return innerHandler(event, user);
+};
+
+exports.__test = {
+  aiDefaults: AI_DEFAULTS,
 };
 
 async function innerHandler(event, user) {
