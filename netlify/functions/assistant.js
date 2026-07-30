@@ -307,6 +307,75 @@ function createAutoRejectResponse(action, reason, pending) {
   };
 }
 
+function pendingBelongsToUser(change, userId, userEmail) {
+  const requestedBy = String(change?.requestedBy || "").trim();
+  const requestedByEmail = String(change?.requestedByEmail || "").trim().toLowerCase();
+  const normalizedUserId = String(userId || "").trim();
+  const normalizedEmail = String(userEmail || "").trim().toLowerCase();
+  return requestedBy === normalizedUserId || (normalizedEmail && requestedByEmail === normalizedEmail);
+}
+
+function missingPendingReason(change) {
+  return !normalizeReason(change?.autoCheck?.requiredReason) && !normalizeReason(change?.action?.reason);
+}
+
+function latestPendingMissingReason(pendingChanges, userId, userEmail) {
+  return (Array.isArray(pendingChanges) ? pendingChanges : [])
+    .filter((change) => change?.status === "pending" && pendingBelongsToUser(change, userId, userEmail) && missingPendingReason(change))
+    .sort((a, b) => {
+      const aTime = Date.parse(a.createdAt || "") || 0;
+      const bTime = Date.parse(b.createdAt || "") || 0;
+      return bTime - aTime || Number(b.id || 0) - Number(a.id || 0);
+    })[0] || null;
+}
+
+function isStandaloneReasonMessage(message) {
+  const text = normalizeReason(message);
+  if (!text) return false;
+  if (/\b(add|book|create|cancel|remove|delete|reschedule|move|shift|postpone|change|what|when|who|list|show)\b/i.test(text)) {
+    return false;
+  }
+  return !isNoopMessage(text);
+}
+
+async function attachReasonToPendingChange(store, pendingChanges, pending, reason, userMessage) {
+  const nextPendingChanges = pendingChanges.map((change) => {
+    if (change.id !== pending.id) return change;
+    return {
+      ...change,
+      updatedAt: new Date().toISOString(),
+      followUpMessages: [
+        ...(Array.isArray(change.followUpMessages) ? change.followUpMessages : []),
+        { message: userMessage, createdAt: new Date().toISOString() },
+      ],
+      autoCheck: {
+        ...(change.autoCheck || {}),
+        requiredReason: reason,
+      },
+      action: {
+        ...(change.action || {}),
+        reason,
+      },
+    };
+  });
+  await writePendingChanges(store, nextPendingChanges);
+  return nextPendingChanges.find((change) => change.id === pending.id);
+}
+
+function createPendingReasonResponse(pending) {
+  const action = pending?.action || {};
+  const label = [action.subject, action.student].filter(Boolean).join(" with ");
+  return {
+    action: {
+      action: "query",
+      reply: `Thanks, I added that reason to your pending${label ? ` ${label}` : ""} request.`,
+    },
+    applied: false,
+    pending: true,
+    pendingChange: pending,
+  };
+}
+
 function findLessonByContext(lessons, action) {
   if (!action) return null;
   if (action.lesson_id) return lessons.find((l) => l.id === action.lesson_id);
@@ -1020,11 +1089,12 @@ async function innerHandler(event, user) {
     const store = getLessonStore(event);
     await recordUserIdentity(store, userId, userEmail);
 
-    const [usage, lessons, approvalSettings, userLimit] = await Promise.all([
+    const [usage, lessons, approvalSettings, userLimit, pendingChanges] = await Promise.all([
       readUsage(store, userId),
       readLessons(store),
       readApprovalSettings(store),
       getUserPromptLimit(store, userId),
+      readPendingChanges(store),
     ]);
 
     if (usage.count >= userLimit) {
@@ -1061,6 +1131,23 @@ async function innerHandler(event, user) {
       approvalSettings.auto.requireReason === true;
 
     await writeUsage(store, userId, nextUsage);
+    const pendingReasonTarget = latestPendingMissingReason(pendingChanges, userId, userEmail);
+    const followUpReason = isStandaloneReasonMessage(body.message) ? normalizeReason(body.message) : "";
+    if (pendingReasonTarget && followUpReason) {
+      const updatedPending = await attachReasonToPendingChange(
+        store,
+        pendingChanges,
+        pendingReasonTarget,
+        followUpReason,
+        body.message
+      );
+      return jsonResponse(200, {
+        ...createPendingReasonResponse(updatedPending),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
+    }
+
     let action;
     let inferredReason = "";
     try {

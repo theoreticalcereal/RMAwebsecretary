@@ -53,11 +53,11 @@ function timesOverlap(aStart, aEnd, bStart, bEnd) {
   return as < be && bs < ae;
 }
 
-function createStoreMock(initialLessons) {
+function createStoreMock(initialLessons, options = {}) {
   const state = {
     lessons: initialLessons.map((lesson) => ({ ...lesson })),
     usage: { count: 0, maintainerNotified: false },
-    pendingChanges: [],
+    pendingChanges: (options.pendingChanges || []).map((change) => JSON.parse(JSON.stringify(change))),
   };
 
   return {
@@ -175,4 +175,73 @@ test("reschedules a lesson from subject, student, day, and bare old time", async
   assert.equal(body.lesson.end_time, "15:00");
   assert.equal(body.action.lesson_id, 7);
   assert.equal(body.action.reason, "I can go to my siblings wedding");
+});
+
+test("adds a follow-up reason to the user's latest pending request without AI", async () => {
+  const store = createStoreMock([], {
+    pendingChanges: [
+      {
+        id: 12,
+        status: "pending",
+        createdAt: "2026-07-30T17:54:00.000Z",
+        requestedBy: "user-1",
+        requestedByEmail: "ricky@example.com",
+        requestMessage: "Can you add Cello with Samuel from 7:00 to 8:00 PM on friday",
+        autoCheck: {
+          requiredReason: "",
+        },
+        action: {
+          action: "add",
+          student: "Samuel",
+          subject: "Cello",
+          day_of_week: 4,
+          start_time: "19:00",
+          end_time: "20:00",
+          old_start_time: null,
+          old_end_time: null,
+          recurring: true,
+          specific_date: null,
+          lesson_id: null,
+          reason: null,
+          reply: "A valid reason is required before automatic approval.",
+        },
+      },
+    ],
+  });
+
+  const assistant = loadAssistant({
+    "./_store": store.module,
+    "./_auth": {
+      async getSession() {
+        return { id: "user-1", email: "ricky@example.com" };
+      },
+    },
+    "./_notify": {
+      async notifyMaintainer() {
+        return { sent: false };
+      },
+    },
+  });
+
+  const response = await assistant.handler({
+    httpMethod: "POST",
+    body: JSON.stringify({
+      message: "its the scheduled weekly class and hasn't been added to calendar yet",
+    }),
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  const body = JSON.parse(response.body);
+  assert.equal(body.applied, false);
+  assert.equal(body.pending, true);
+  assert.equal(body.pendingChange.id, 12);
+  assert.equal(
+    body.pendingChange.autoCheck.requiredReason,
+    "its the scheduled weekly class and hasn't been added to calendar yet"
+  );
+  assert.equal(
+    body.pendingChange.action.reason,
+    "its the scheduled weekly class and hasn't been added to calendar yet"
+  );
+  assert.equal(store.state.lessons.length, 0);
 });
