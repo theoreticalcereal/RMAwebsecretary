@@ -177,7 +177,7 @@ test("reschedules a lesson from subject, student, day, and bare old time", async
   assert.equal(body.action.reason, "I can go to my siblings wedding");
 });
 
-test("adds a follow-up reason to the user's latest pending request without AI", async () => {
+test("lets AI use pending request context to add a follow-up reason", async () => {
   const store = createStoreMock([], {
     pendingChanges: [
       {
@@ -209,39 +209,203 @@ test("adds a follow-up reason to the user's latest pending request without AI", 
     ],
   });
 
-  const assistant = loadAssistant({
-    "./_store": store.module,
-    "./_auth": {
-      async getSession() {
-        return { id: "user-1", email: "ricky@example.com" };
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  let nimPrompt = "";
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    nimPrompt = payload.messages.find((message) => message.role === "user").content;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "add",
+                  student: "Samuel",
+                  subject: "Cello",
+                  day_of_week: 4,
+                  start_time: "19:00",
+                  end_time: "20:00",
+                  old_start_time: null,
+                  old_end_time: null,
+                  recurring: true,
+                  specific_date: null,
+                  lesson_id: null,
+                  reason: "its the scheduled weekly class and hasn't been added to calendar yet",
+                  reply: "I found the pending Cello with Samuel request and added that reason.",
+                }),
+              },
+            },
+          ],
+        };
       },
-    },
-    "./_notify": {
-      async notifyMaintainer() {
-        return { sent: false };
+    };
+  };
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "ricky@example.com" };
+        },
       },
-    },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "its the scheduled weekly class and hasn't been added to calendar yet",
+      }),
+    });
+
+    assert.match(nimPrompt, /PENDING REQUESTS:/);
+    assert.match(nimPrompt, /id=12/);
+    assert.match(nimPrompt, /Cello/);
+    assert.match(nimPrompt, /Samuel/);
+    assert.equal(response.statusCode, 200, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.applied, false);
+    assert.equal(body.pending, true);
+    assert.equal(body.pendingChange.id, 12);
+    assert.equal(
+      body.pendingChange.autoCheck.requiredReason,
+      "its the scheduled weekly class and hasn't been added to calendar yet"
+    );
+    assert.equal(
+      body.pendingChange.action.reason,
+      "its the scheduled weekly class and hasn't been added to calendar yet"
+    );
+    assert.equal(store.state.lessons.length, 0);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("lets AI reason over an approval follow-up with pending request context", async () => {
+  const existingReason = "Its the weekly occuring lesson it hasnt been added yet";
+  const store = createStoreMock([], {
+    pendingChanges: [
+      {
+        id: 13,
+        status: "pending",
+        createdAt: "2026-07-30T17:56:00.000Z",
+        requestedBy: "user-1",
+        requestedByEmail: "ricky@example.com",
+        requestMessage: "Can you add Cello with Samuel from 7:00 to 8:00 PM on friday",
+        autoCheck: {
+          requiredReason: existingReason,
+        },
+        action: {
+          action: "add",
+          student: "Samuel",
+          subject: "Cello",
+          day_of_week: 4,
+          start_time: "19:00",
+          end_time: "20:00",
+          old_start_time: null,
+          old_end_time: null,
+          recurring: true,
+          specific_date: null,
+          lesson_id: null,
+          reason: existingReason,
+          reply: "A valid reason is required before automatic approval.",
+        },
+      },
+    ],
   });
 
-  const response = await assistant.handler({
-    httpMethod: "POST",
-    body: JSON.stringify({
-      message: "its the scheduled weekly class and hasn't been added to calendar yet",
-    }),
-  });
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  let nimPrompt = "";
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    nimPrompt = payload.messages.find((message) => message.role === "user").content;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "query",
+                  student: null,
+                  subject: null,
+                  day_of_week: null,
+                  start_time: null,
+                  end_time: null,
+                  old_start_time: null,
+                  old_end_time: null,
+                  recurring: true,
+                  specific_date: null,
+                  lesson_id: null,
+                  reason: null,
+                  reply: "I found your pending Cello with Samuel request. It still needs maintainer review.",
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
 
-  assert.equal(response.statusCode, 200, response.body);
-  const body = JSON.parse(response.body);
-  assert.equal(body.applied, false);
-  assert.equal(body.pending, true);
-  assert.equal(body.pendingChange.id, 12);
-  assert.equal(
-    body.pendingChange.autoCheck.requiredReason,
-    "its the scheduled weekly class and hasn't been added to calendar yet"
-  );
-  assert.equal(
-    body.pendingChange.action.reason,
-    "its the scheduled weekly class and hasn't been added to calendar yet"
-  );
-  assert.equal(store.state.lessons.length, 0);
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "ricky@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "Can you approve it",
+      }),
+    });
+
+    assert.match(nimPrompt, /PENDING REQUESTS:/);
+    assert.match(nimPrompt, /id=13/);
+    assert.match(nimPrompt, /Cello/);
+    assert.match(nimPrompt, /Samuel/);
+    assert.equal(response.statusCode, 200, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.applied, false);
+    assert.equal(body.pending, undefined);
+    assert.match(body.action.reply, /pending Cello with Samuel request/i);
+    assert.equal(store.state.pendingChanges[0].autoCheck.requiredReason, existingReason);
+    assert.equal(store.state.pendingChanges[0].action.reason, existingReason);
+    assert.equal(store.state.lessons.length, 0);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
 });

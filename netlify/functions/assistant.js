@@ -74,6 +74,9 @@ Rules:
 - "delete" means remove a recurring lesson entirely.
 - "reschedule" means adjust an existing lesson's times. Use lesson_id if possible, otherwise include subject/student.
 - "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful answer using the CURRENT LESSONS provided below, action "query".
+- Use PENDING REQUESTS as conversation context. If the user says "it", "that", gives a missing reason, or asks about approval, infer which pending request they mean when there is a clear match.
+- If the user provides the missing reason for a pending request, return that pending request's original action with the new "reason" filled in.
+- If the user asks to approve a pending request and does not clearly have maintainer/admin authority, use action "query" and explain that the pending request still needs maintainer review.
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.
 - Include a "reason" value whenever the request contains a natural-language reason (for example, phrases like "because", "since", "so that", or "for"), even if short. Use null only when no reason is present.`;
@@ -319,25 +322,6 @@ function missingPendingReason(change) {
   return !normalizeReason(change?.autoCheck?.requiredReason) && !normalizeReason(change?.action?.reason);
 }
 
-function latestPendingMissingReason(pendingChanges, userId, userEmail) {
-  return (Array.isArray(pendingChanges) ? pendingChanges : [])
-    .filter((change) => change?.status === "pending" && pendingBelongsToUser(change, userId, userEmail) && missingPendingReason(change))
-    .sort((a, b) => {
-      const aTime = Date.parse(a.createdAt || "") || 0;
-      const bTime = Date.parse(b.createdAt || "") || 0;
-      return bTime - aTime || Number(b.id || 0) - Number(a.id || 0);
-    })[0] || null;
-}
-
-function isStandaloneReasonMessage(message) {
-  const text = normalizeReason(message);
-  if (!text) return false;
-  if (/\b(add|book|create|cancel|remove|delete|reschedule|move|shift|postpone|change|what|when|who|list|show)\b/i.test(text)) {
-    return false;
-  }
-  return !isNoopMessage(text);
-}
-
 async function attachReasonToPendingChange(store, pendingChanges, pending, reason, userMessage) {
   const nextPendingChanges = pendingChanges.map((change) => {
     if (change.id !== pending.id) return change;
@@ -360,6 +344,42 @@ async function attachReasonToPendingChange(store, pendingChanges, pending, reaso
   });
   await writePendingChanges(store, nextPendingChanges);
   return nextPendingChanges.find((change) => change.id === pending.id);
+}
+
+function actionMatchesPendingChange(action, pending) {
+  if (!action || !pending?.action) return false;
+  const pendingAction = pending.action;
+  if (action.action !== pendingAction.action) return false;
+
+  const actionSubject = normalizeName(action.subject);
+  const pendingSubject = normalizeName(pendingAction.subject);
+  if (actionSubject && pendingSubject && actionSubject !== pendingSubject) return false;
+
+  const actionStudent = normalizeName(action.student);
+  const pendingStudent = normalizeName(pendingAction.student);
+  if (actionStudent && pendingStudent && actionStudent !== pendingStudent) return false;
+
+  if (action.day_of_week !== null && action.day_of_week !== undefined && pendingAction.day_of_week !== null && pendingAction.day_of_week !== undefined && action.day_of_week !== pendingAction.day_of_week) {
+    return false;
+  }
+
+  if (action.start_time && pendingAction.start_time && action.start_time !== pendingAction.start_time) {
+    return false;
+  }
+
+  if (action.end_time && pendingAction.end_time && action.end_time !== pendingAction.end_time) {
+    return false;
+  }
+
+  return true;
+}
+
+function findPendingReasonUpdate(pendingChanges, userId, userEmail, action, reason) {
+  const normalizedReason = normalizeReason(reason || action?.reason);
+  if (!normalizedReason) return null;
+  return (Array.isArray(pendingChanges) ? pendingChanges : [])
+    .filter((change) => change?.status === "pending" && pendingBelongsToUser(change, userId, userEmail) && missingPendingReason(change))
+    .find((change) => actionMatchesPendingChange(action, change)) || null;
 }
 
 function createPendingReasonResponse(pending) {
@@ -758,7 +778,7 @@ function enrichParsedAction(action, lessons) {
   return enriched;
 }
 
-async function parseActionTwoStage(message, lessons, store, requiresAiReason) {
+async function parseActionTwoStage(message, lessons, store, requiresAiReason, pendingChanges = []) {
   const stage1 = parseQuickAction(message);
 
   if (stage1 && stage1.action === "query") {
@@ -787,7 +807,7 @@ async function parseActionTwoStage(message, lessons, store, requiresAiReason) {
 
   if (stage1 && isFastActionComplete(stage1) && requiresAiReason) {
     try {
-      const stage2 = await parseActionFromAi(message, lessons, store, true);
+      const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges });
       const resolvedAction = enrichParsedAction(stage2 || stage1 || { action: "unknown", reason: null }, lessons);
       const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
       const reason = inferredReason || inferReasonFromUserMessage(message);
@@ -813,7 +833,7 @@ async function parseActionTwoStage(message, lessons, store, requiresAiReason) {
     }
   }
 
-  const stage2 = await parseActionFromAi(message, lessons, store, true);
+  const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges });
   const resolvedAction = enrichParsedAction(stage2 || stage1 || { action: "unknown", reason: null }, lessons);
   const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
   const reason = inferredReason || inferReasonFromUserMessage(message);
@@ -885,6 +905,28 @@ function inferReasonFromUserMessage(userMessage) {
   return normalizeReason(candidate);
 }
 
+function summarizePendingRequests(pendingChanges) {
+  const pending = (Array.isArray(pendingChanges) ? pendingChanges : []).filter((change) => change?.status === "pending");
+  if (!pending.length) return "(no pending requests)";
+
+  return pending
+    .map((change) => {
+      const action = change.action || {};
+      const reason = normalizeReason(change.autoCheck?.requiredReason || action.reason) || "missing";
+      return [
+        `id=${change.id}`,
+        `requested="${change.requestMessage || ""}"`,
+        `action=${action.action || "unknown"}`,
+        `student=${action.student || "unknown"}`,
+        `subject=${action.subject || "unknown"}`,
+        `day=${action.day_of_week ?? "unknown"}`,
+        `time=${action.start_time || "unknown"}-${action.end_time || "unknown"}`,
+        `reason=${reason}`,
+      ].join(" ");
+    })
+    .join("\n");
+}
+
 async function callNim(apiKey, userMessage, lessons, options = {}) {
   const controller = new AbortController();
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : NIM_TIMEOUT_MS;
@@ -899,6 +941,7 @@ async function callNim(apiKey, userMessage, lessons, options = {}) {
         }`
     )
     .join("\n") || "(no lessons scheduled yet)";
+  const pendingSummary = summarizePendingRequests(options.pendingChanges);
 
   let res;
   try {
@@ -913,7 +956,13 @@ async function callNim(apiKey, userMessage, lessons, options = {}) {
         model: NIM_MODEL,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: `CURRENT LESSONS:\n${lessonsSummary}\n\nUSER REQUEST:\n${userMessage}` },
+          {
+            role: "user",
+            content:
+              `CURRENT LESSONS:\n${lessonsSummary}`
+              + `\n\nPENDING REQUESTS:\n${pendingSummary}`
+              + `\n\nUSER REQUEST:\n${userMessage}`,
+          },
         ],
         temperature: 0.2,
         max_tokens: NIM_MAX_TOKENS,
@@ -1002,7 +1051,7 @@ async function inferReasonOnly(apiKey, userMessage) {
   return inferReasonFromUserMessage(userMessage);
 }
 
-async function parseActionFromAi(message, lessons, store, reserveSlot = true) {
+async function parseActionFromAi(message, lessons, store, reserveSlot = true, context = {}) {
   if (reserveSlot) {
     await reserveNimRequestSlot(store);
   }
@@ -1012,7 +1061,7 @@ async function parseActionFromAi(message, lessons, store, reserveSlot = true) {
     throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
   }
 
-  const action = await callNim(apiKey, message, lessons);
+  const action = await callNim(apiKey, message, lessons, context);
   return action;
 }
 
@@ -1131,27 +1180,10 @@ async function innerHandler(event, user) {
       approvalSettings.auto.requireReason === true;
 
     await writeUsage(store, userId, nextUsage);
-    const pendingReasonTarget = latestPendingMissingReason(pendingChanges, userId, userEmail);
-    const followUpReason = isStandaloneReasonMessage(body.message) ? normalizeReason(body.message) : "";
-    if (pendingReasonTarget && followUpReason) {
-      const updatedPending = await attachReasonToPendingChange(
-        store,
-        pendingChanges,
-        pendingReasonTarget,
-        followUpReason,
-        body.message
-      );
-      return jsonResponse(200, {
-        ...createPendingReasonResponse(updatedPending),
-        limit: userLimit,
-        used: nextUsage.count,
-      });
-    }
-
     let action;
     let inferredReason = "";
     try {
-      const parseResult = await parseActionTwoStage(body.message, lessons, store, requiresAiReason);
+      const parseResult = await parseActionTwoStage(body.message, lessons, store, requiresAiReason, pendingChanges);
       action = parseResult.action;
       inferredReason = parseResult.reason || "";
       if (!action || action.action === "query") {
@@ -1185,6 +1217,22 @@ async function innerHandler(event, user) {
         });
       }
       return jsonResponse(500, { error: "internal error", detail: String(err.message || err) });
+    }
+
+    const pendingReasonUpdate = findPendingReasonUpdate(pendingChanges, userId, userEmail, action, inferredReason);
+    if (pendingReasonUpdate) {
+      const updatedPending = await attachReasonToPendingChange(
+        store,
+        pendingChanges,
+        pendingReasonUpdate,
+        normalizeReason(inferredReason || action.reason),
+        body.message
+      );
+      return jsonResponse(200, {
+        ...createPendingReasonResponse(updatedPending),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
     }
 
     if (action.action === "query" || action.action === "unknown" || !action.action) {
