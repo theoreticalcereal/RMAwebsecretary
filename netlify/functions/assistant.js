@@ -83,7 +83,7 @@ Rules:
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask one natural clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.
 - Include a "reason" value whenever the request contains a natural-language reason (for example, phrases like "because", "since", "so that", or "for"), even if short. Use null only when no reason is present.
-- Make "reply" sound like a concise assistant response, not a rule label or parser trace.`;
+- For "reply", prefer a concise, natural assistant response. Avoid rule labels or parser traces when a normal confirmation or clarifying question would be clearer.`;
 
 function nowInMs() {
   return Date.now();
@@ -384,6 +384,33 @@ function findPendingReasonUpdate(pendingChanges, userId, userEmail, action, reas
   return (Array.isArray(pendingChanges) ? pendingChanges : [])
     .filter((change) => change?.status === "pending" && pendingBelongsToUser(change, userId, userEmail) && missingPendingReason(change))
     .find((change) => actionMatchesPendingChange(action, change)) || null;
+}
+
+function looksLikeStandaloneReason(message, minReasonLength = 0) {
+  const reason = normalizeReason(message);
+  if (reason.length < minReasonLength) return "";
+  const lower = reason.toLowerCase();
+  if (/[?]/.test(reason)) return "";
+  if (/\b(add|schedule|book|create|cancel|remove|delete|reschedule|move|shift|postpone|change|approve|approval|what|when|who|list|show)\b/.test(lower)) {
+    return "";
+  }
+  return reason;
+}
+
+function findSinglePendingReasonTarget(pendingChanges, userId, userEmail, message, settings) {
+  const minReasonLength = Number(settings?.auto?.minReasonLength ?? 0);
+  const reason = looksLikeStandaloneReason(message, minReasonLength);
+  if (!reason) return null;
+
+  const matches = (Array.isArray(pendingChanges) ? pendingChanges : []).filter(
+    (change) =>
+      change?.status === "pending" &&
+      pendingBelongsToUser(change, userId, userEmail) &&
+      missingPendingReason(change)
+  );
+
+  if (matches.length !== 1) return null;
+  return { pending: matches[0], reason };
 }
 
 function createPendingReasonResponse(pending) {
@@ -1194,6 +1221,29 @@ async function innerHandler(event, user) {
       approvalSettings.auto.requireReason === true;
 
     await writeUsage(store, userId, nextUsage);
+
+    const standalonePendingReason = findSinglePendingReasonTarget(
+      pendingChanges,
+      userId,
+      userEmail,
+      body.message,
+      approvalSettings
+    );
+    if (standalonePendingReason) {
+      const updatedPending = await attachReasonToPendingChange(
+        store,
+        pendingChanges,
+        standalonePendingReason.pending,
+        standalonePendingReason.reason,
+        body.message
+      );
+      return jsonResponse(200, {
+        ...createPendingReasonResponse(updatedPending),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
+    }
+
     let action;
     let inferredReason = "";
     try {
