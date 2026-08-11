@@ -256,6 +256,241 @@ test("lets AI interpret complete scheduling requests before quick parsers", asyn
   }
 });
 
+test("lets AI choose how to handle pending-request management commands", async () => {
+  const store = createStoreMock([], {
+    pendingChanges: [
+      {
+        id: 31,
+        status: "pending",
+        createdAt: "2026-07-30T17:54:00.000Z",
+        requestedBy: "user-1",
+        requestedByEmail: "samuel@example.com",
+        requestMessage: "Can you add Cello with Samuel from 7:00 to 8:00 PM on friday",
+        autoCheck: {
+          requiredReason: "",
+        },
+        action: {
+          action: "add",
+          student: "Samuel",
+          subject: "Cello",
+          day_of_week: 4,
+          start_time: "19:00",
+          end_time: "20:00",
+          old_start_time: null,
+          old_end_time: null,
+          recurring: true,
+          specific_date: null,
+          lesson_id: null,
+          reason: null,
+          reply: "A valid reason is required before automatic approval.",
+        },
+      },
+    ],
+  });
+
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  let nimPrompt = "";
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    nimPrompt = payload.messages.find((message) => message.role === "user").content;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "query",
+                  student: null,
+                  subject: null,
+                  day_of_week: null,
+                  start_time: null,
+                  end_time: null,
+                  old_start_time: null,
+                  old_end_time: null,
+                  recurring: true,
+                  specific_date: null,
+                  lesson_id: null,
+                  reason: null,
+                  reply: "I can help with pending requests, but clearing them is not available yet.",
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "samuel@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "clear my pending requests",
+      }),
+    });
+
+    assert.match(nimPrompt, /PENDING REQUESTS:/);
+    assert.match(nimPrompt, /id=31/);
+    assert.match(nimPrompt, /USER REQUEST:\nclear my pending requests/);
+    assert.equal(response.statusCode, 200, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.action.action, "query");
+    assert.doesNotMatch(body.action.reply, /Which lesson should I delete/i);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("lets AI clear the signed-in user's pending requests with a tool action", async () => {
+  const store = createStoreMock([], {
+    pendingChanges: [
+      {
+        id: 32,
+        status: "pending",
+        createdAt: "2026-07-30T17:54:00.000Z",
+        requestedBy: "user-1",
+        requestedByEmail: "samuel@example.com",
+        requestMessage: "Can you add Cello with Samuel from 7:00 to 8:00 PM on friday",
+        autoCheck: {
+          requiredReason: "",
+        },
+        action: {
+          action: "add",
+          student: "Samuel",
+          subject: "Cello",
+          day_of_week: 4,
+          start_time: "19:00",
+          end_time: "20:00",
+          old_start_time: null,
+          old_end_time: null,
+          recurring: true,
+          specific_date: null,
+          lesson_id: null,
+          reason: null,
+          reply: "A valid reason is required before automatic approval.",
+        },
+      },
+      {
+        id: 33,
+        status: "pending",
+        createdAt: "2026-07-30T17:55:00.000Z",
+        requestedBy: "other-user",
+        requestedByEmail: "other@example.com",
+        requestMessage: "Can you add Piano with Lee from 5:00 to 6:00 PM on monday",
+        autoCheck: {
+          requiredReason: "",
+        },
+        action: {
+          action: "add",
+          student: "Lee",
+          subject: "Piano",
+          day_of_week: 0,
+          start_time: "17:00",
+          end_time: "18:00",
+          old_start_time: null,
+          old_end_time: null,
+          recurring: true,
+          specific_date: null,
+          lesson_id: null,
+          reason: null,
+          reply: "A valid reason is required before automatic approval.",
+        },
+      },
+    ],
+  });
+
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                action: "clear_pending",
+                student: null,
+                subject: null,
+                day_of_week: null,
+                start_time: null,
+                end_time: null,
+                old_start_time: null,
+                old_end_time: null,
+                recurring: true,
+                specific_date: null,
+                lesson_id: null,
+                reason: null,
+                reply: "I cleared your pending requests.",
+              }),
+            },
+          },
+        ],
+      };
+    },
+  });
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "samuel@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "clear my pending requests",
+      }),
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.action.action, "clear_pending");
+    assert.equal(body.clearedPending, 1);
+    assert.deepEqual(store.state.pendingChanges.map((change) => change.id), [33]);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
 test("includes a small recent conversation window in the AI prompt", async () => {
   const store = createStoreMock([]);
 

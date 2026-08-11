@@ -55,7 +55,7 @@ Today's date is ${new Date().toISOString().slice(0, 10)}.
 
 The JSON must have this shape:
 {
-  "action": "add" | "cancel" | "delete" | "reschedule" | "query" | "unknown",
+  "action": "add" | "cancel" | "delete" | "reschedule" | "clear_pending" | "query" | "unknown",
   "student": string or null,
   "subject": string or null,
   "day_of_week": integer 0-6 (Monday=0, Sunday=6) or null,
@@ -75,6 +75,7 @@ Rules:
 - "cancel" means cancel a single upcoming occurrence of an existing recurring lesson (needs lesson_id and specific_date if you can determine them from context; otherwise set action to "unknown" and ask in "reply").
 - "delete" means remove a recurring lesson entirely.
 - "reschedule" means adjust an existing lesson's times. Use lesson_id if possible, otherwise include subject/student.
+- "clear_pending" means clear the signed-in user's own pending assistant requests from the recent requests list. It does not delete lessons.
 - "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful, conversational answer using the CURRENT LESSONS provided below, action "query".
 - Use PENDING REQUESTS as conversation context. If the user says "it", "that", gives a missing reason, or asks about approval, infer which pending request they mean when there is a clear match.
 - Use RECENT CONVERSATION as short-term memory for references and follow-up questions, but treat USER REQUEST as the latest instruction.
@@ -686,33 +687,6 @@ function parseSimpleRescheduleRequest(message) {
   };
 }
 
-function parseQuickCancelRequest(message) {
-  const normalized = message.trim().replace(/\s+/g, " ");
-  const lower = normalized.toLowerCase();
-  if (!/\b(cancel|remove|delete)\b/.test(lower)) return null;
-
-  const lessonIdMatch = lower.match(/\blesson\s*(?:id)?\s*(\d+)\b/i);
-  const subjectMatch = normalized.match(/\b(?:cancel|remove|delete)\s+(?:lesson)?\s*([a-zA-Z][a-zA-Z'’.\- ]{1,40})?/i);
-  const nameMatch = normalized.match(/\b(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:on|at|from|to|between|until|for|that|the)\b|$)/i);
-  const specificDate = normalized.match(/\b(\d{4}-\d{2}-\d{2})\b/i)?.[1] || null;
-  const dayOfWeek = parseDayFromMessage(lower);
-
-  return {
-    action: "cancel",
-    student: nameMatch ? nameMatch[1].trim() : "",
-    subject: subjectMatch ? subjectMatch[1].trim() : "",
-    day_of_week: dayOfWeek,
-    start_time: null,
-    end_time: null,
-    old_start_time: null,
-    old_end_time: null,
-    recurring: true,
-    specific_date: specificDate,
-    lesson_id: lessonIdMatch ? Number(lessonIdMatch[1]) : null,
-    reply: "Got it. I can queue that cancellation for review.",
-  };
-}
-
 function parseQuickQuery(message) {
   const lower = String(message || "").toLowerCase();
   if (isNoopMessage(lower) || /\b(what|when|who|list|show)\b/.test(lower)) {
@@ -738,8 +712,7 @@ function parseQuickAction(message) {
   const quickQuery = parseQuickQuery(message);
   const fastAdd = parseSimpleAddRequest(message);
   const fastReschedule = parseSimpleRescheduleRequest(message);
-  const fastCancel = parseQuickCancelRequest(message);
-  return fastAdd || fastCancel || fastReschedule || quickQuery;
+  return fastAdd || fastReschedule || quickQuery;
 }
 
 function isFastActionComplete(action) {
@@ -1259,6 +1232,32 @@ async function innerHandler(event, user) {
 
     if (action.action === "query" || action.action === "unknown" || !action.action) {
       return jsonResponse(200, { action, applied: false, limit: userLimit, used: nextUsage.count });
+    }
+
+    if (action.action === "clear_pending") {
+      const nextPendingChanges = pendingChanges.filter(
+        (change) =>
+          change?.status !== "pending" ||
+          !pendingBelongsToUser(change, userId, userEmail)
+      );
+      const clearedPending = pendingChanges.length - nextPendingChanges.length;
+      if (clearedPending > 0) {
+        await writePendingChanges(store, nextPendingChanges);
+      }
+      return jsonResponse(200, {
+        action: {
+          ...action,
+          reply:
+            action.reply ||
+            (clearedPending === 1
+              ? "Cleared 1 pending request."
+              : `Cleared ${clearedPending} pending requests.`),
+        },
+        applied: false,
+        clearedPending,
+        limit: userLimit,
+        used: nextUsage.count,
+      });
     }
 
     if (action.action === "add") {

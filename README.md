@@ -36,7 +36,8 @@ there's no separate database to manage.
   session auth
 - `netlify/functions/admin-stats.js`: admin-only usage stats for today
 - `netlify/functions/assistant.js`: the NIM-powered assistant, the only
-  way public users can change the schedule
+  way public users can change the schedule or manage their own pending
+  assistant requests
 - `public/index.html`: public calendar + assistant
 - `public/admin/index.html`: session-gated admin dashboard
 
