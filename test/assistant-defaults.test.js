@@ -123,8 +123,8 @@ function createStoreMock(initialLessons, options = {}) {
 test("uses Netlify-safe defaults for AI reasoning allocation", () => {
   const assistant = loadAssistant();
   assert.deepEqual(assistant.__test.aiDefaults, {
-    requestTimeoutMs: 8500,
-    reasonTimeoutMs: 8500,
+    requestTimeoutMs: 10000,
+    reasonTimeoutMs: 10000,
     maxTokens: 768,
     reasonMaxTokens: 160,
   });

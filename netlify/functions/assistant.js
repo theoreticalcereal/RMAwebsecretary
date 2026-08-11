@@ -26,8 +26,8 @@ const { getSession } = require("./_auth");
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NIM_MODEL = process.env.NVIDIA_NIM_MODEL || "meta/llama-3.1-8b-instruct";
 const AI_DEFAULTS = Object.freeze({
-  requestTimeoutMs: 8500,
-  reasonTimeoutMs: 8500,
+  requestTimeoutMs: 10000,
+  reasonTimeoutMs: 10000,
   maxTokens: 768,
   reasonMaxTokens: 160,
 });
