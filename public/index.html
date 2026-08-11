@@ -342,10 +342,12 @@
 
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const ASSISTANT_CONTEXT_LIMIT = 6;
 
 const state = {
   user: null,
   calendarRefreshId: null,
+  assistantHistory: [],
 };
 
 function formatTime(hhmm) {
@@ -382,6 +384,18 @@ function appendMessage(kind, text, isError = false) {
   conversation.appendChild(row);
   conversation.scrollTop = conversation.scrollHeight;
   return row;
+}
+
+function rememberAssistantMessage(role, content) {
+  if (role !== "user" && role !== "assistant") return;
+  const normalized = String(content || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return;
+  state.assistantHistory.push({ role, content: normalized });
+  state.assistantHistory = state.assistantHistory.slice(-ASSISTANT_CONTEXT_LIMIT);
+}
+
+function recentAssistantHistory() {
+  return state.assistantHistory.slice(-ASSISTANT_CONTEXT_LIMIT);
 }
 
 function setAuthError(message) {
@@ -430,6 +444,7 @@ function setSessionView(showSignedIn, user) {
     setAuthInfo("");
     conversation.innerHTML = "";
     conversation.removeAttribute("data-ready");
+    state.assistantHistory = [];
     document.getElementById("request-section").classList.add("hidden");
     const requestsTbody = document.getElementById("requests-tbody");
     const requestsEmpty = document.getElementById("requests-empty");
@@ -678,7 +693,9 @@ assistantForm.addEventListener("submit", async (e) => {
   if (!message || !state.user) return;
 
   const formSubmit = assistantSubmit;
+  const history = recentAssistantHistory();
   appendMessage("user", message);
+  rememberAssistantMessage("user", message);
   const assistantRow = appendMessage("assistant", "Thinking...");
   assistantInput.value = "";
   formSubmit.disabled = true;
@@ -690,7 +707,7 @@ assistantForm.addEventListener("submit", async (e) => {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, history }),
     });
     const data = await res.json();
 
@@ -706,6 +723,7 @@ assistantForm.addEventListener("submit", async (e) => {
         data?.detail || data?.error || data?.action?.reply || (data?.timedOut ? "The assistant timed out. Please retry." : "Something went wrong.");
       assistantRow.querySelector(".bubble").textContent = fallback;
       assistantRow.classList.add("error");
+      rememberAssistantMessage("assistant", fallback);
       return;
     }
 
@@ -713,6 +731,7 @@ assistantForm.addEventListener("submit", async (e) => {
     const isLimitReached = data.limitReached;
     assistantRow.querySelector(".bubble").textContent = reply;
     if (isLimitReached) assistantRow.classList.add("error");
+    rememberAssistantMessage("assistant", reply);
 
     if (data.applied || data.pending) {
       await refresh();

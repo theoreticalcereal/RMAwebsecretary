@@ -35,6 +35,8 @@ const NIM_TIMEOUT_MS = AI_DEFAULTS.requestTimeoutMs;
 const NIM_REASON_TIMEOUT_MS = AI_DEFAULTS.reasonTimeoutMs;
 const NIM_MAX_TOKENS = AI_DEFAULTS.maxTokens;
 const NIM_REASON_MAX_TOKENS = AI_DEFAULTS.reasonMaxTokens;
+const RECENT_CONVERSATION_LIMIT = 6;
+const RECENT_CONVERSATION_MESSAGE_MAX_CHARS = 600;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAY_NAME_TO_INDEX = {
@@ -75,6 +77,7 @@ Rules:
 - "reschedule" means adjust an existing lesson's times. Use lesson_id if possible, otherwise include subject/student.
 - "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful, conversational answer using the CURRENT LESSONS provided below, action "query".
 - Use PENDING REQUESTS as conversation context. If the user says "it", "that", gives a missing reason, or asks about approval, infer which pending request they mean when there is a clear match.
+- Use RECENT CONVERSATION as short-term memory for references and follow-up questions, but treat USER REQUEST as the latest instruction.
 - If the user provides the missing reason for a pending request, return that pending request's original action with the new "reason" filled in.
 - If the user asks to approve a pending request and does not clearly have maintainer/admin authority, use action "query" and explain that the pending request still needs maintainer review.
 - If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask one natural clarifying question in "reply".
@@ -779,7 +782,7 @@ function enrichParsedAction(action, lessons) {
   return enriched;
 }
 
-async function parseActionTwoStage(message, lessons, store, requiresAiReason, pendingChanges = []) {
+async function parseActionTwoStage(message, lessons, store, requiresAiReason, pendingChanges = [], recentConversation = []) {
   const stage1 = parseQuickAction(message);
 
   if (stage1 && stage1.action === "query" && isNoopMessage(message)) {
@@ -794,7 +797,7 @@ async function parseActionTwoStage(message, lessons, store, requiresAiReason, pe
   }
 
   try {
-    const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges });
+    const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges, recentConversation });
     const resolvedAction = enrichParsedAction(stage2 || { action: "unknown", reason: null }, lessons);
     const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
     const reason = inferredReason || inferReasonFromUserMessage(message);
@@ -910,6 +913,32 @@ function summarizePendingRequests(pendingChanges) {
     .join("\n");
 }
 
+function sanitizeRecentConversation(history) {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .filter((entry) => entry && (entry.role === "user" || entry.role === "assistant"))
+    .map((entry) => {
+      const content = String(entry.content || "").replace(/\s+/g, " ").trim();
+      if (!content) return null;
+      return {
+        role: entry.role,
+        content:
+          content.length > RECENT_CONVERSATION_MESSAGE_MAX_CHARS
+            ? content.slice(0, RECENT_CONVERSATION_MESSAGE_MAX_CHARS)
+            : content,
+      };
+    })
+    .filter(Boolean)
+    .slice(-RECENT_CONVERSATION_LIMIT);
+}
+
+function summarizeRecentConversation(history) {
+  const recent = sanitizeRecentConversation(history);
+  if (!recent.length) return "(no recent conversation)";
+  return recent.map((entry) => `${entry.role}: ${entry.content}`).join("\n");
+}
+
 async function callNim(apiKey, userMessage, lessons, options = {}) {
   const controller = new AbortController();
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : NIM_TIMEOUT_MS;
@@ -925,6 +954,7 @@ async function callNim(apiKey, userMessage, lessons, options = {}) {
     )
     .join("\n") || "(no lessons scheduled yet)";
   const pendingSummary = summarizePendingRequests(options.pendingChanges);
+  const recentConversationSummary = summarizeRecentConversation(options.recentConversation);
 
   let res;
   try {
@@ -944,6 +974,7 @@ async function callNim(apiKey, userMessage, lessons, options = {}) {
             content:
               `CURRENT LESSONS:\n${lessonsSummary}`
               + `\n\nPENDING REQUESTS:\n${pendingSummary}`
+              + `\n\nRECENT CONVERSATION:\n${recentConversationSummary}`
               + `\n\nUSER REQUEST:\n${userMessage}`,
           },
         ],
@@ -1166,7 +1197,14 @@ async function innerHandler(event, user) {
     let action;
     let inferredReason = "";
     try {
-      const parseResult = await parseActionTwoStage(body.message, lessons, store, requiresAiReason, pendingChanges);
+      const parseResult = await parseActionTwoStage(
+        body.message,
+        lessons,
+        store,
+        requiresAiReason,
+        pendingChanges,
+        body.history
+      );
       action = parseResult.action;
       inferredReason = parseResult.reason || "";
       if (!action || action.action === "query") {
