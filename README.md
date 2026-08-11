@@ -78,15 +78,18 @@ are rejected with `403`.
 The NIM assistant uses Netlify-oriented defaults baked into
 `netlify/functions/assistant.js`:
 
-- Full assistant parse timeout: 9 seconds
-- Reason-only extraction timeout: 9 seconds
-- Full assistant response cap: 1536 tokens
-- Reason-only response cap: 256 tokens
+- Full assistant parse timeout: 8.5 seconds
+- Reason-only extraction timeout: 8.5 seconds
+- Full assistant response cap: 768 tokens
+- Reason-only response cap: 160 tokens
+- Default model: `meta/llama-3.1-8b-instruct`
 
 These values intentionally stay below a 10 second synchronous Netlify
 function window, so the app can return a graceful timeout response instead
 of being cut off by the platform. Raising them further is only useful on a
-Netlify plan or function mode with a longer execution window.
+Netlify plan or function mode with a longer execution window. For lower
+latency, use a faster model rather than spending more prompt quota. Override
+the default with `NVIDIA_NIM_MODEL` if you need a different NIM model.
 
 ```bash
 netlify dev

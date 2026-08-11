@@ -24,12 +24,12 @@ const { notifyMaintainer } = require("./_notify");
 const { getSession } = require("./_auth");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const NIM_MODEL = "meta/llama-3.3-70b-instruct";
+const NIM_MODEL = process.env.NVIDIA_NIM_MODEL || "meta/llama-3.1-8b-instruct";
 const AI_DEFAULTS = Object.freeze({
-  requestTimeoutMs: 9000,
-  reasonTimeoutMs: 9000,
-  maxTokens: 1536,
-  reasonMaxTokens: 256,
+  requestTimeoutMs: 8500,
+  reasonTimeoutMs: 8500,
+  maxTokens: 768,
+  reasonMaxTokens: 160,
 });
 const NIM_TIMEOUT_MS = AI_DEFAULTS.requestTimeoutMs;
 const NIM_REASON_TIMEOUT_MS = AI_DEFAULTS.reasonTimeoutMs;
@@ -384,33 +384,6 @@ function findPendingReasonUpdate(pendingChanges, userId, userEmail, action, reas
   return (Array.isArray(pendingChanges) ? pendingChanges : [])
     .filter((change) => change?.status === "pending" && pendingBelongsToUser(change, userId, userEmail) && missingPendingReason(change))
     .find((change) => actionMatchesPendingChange(action, change)) || null;
-}
-
-function looksLikeStandaloneReason(message, minReasonLength = 0) {
-  const reason = normalizeReason(message);
-  if (reason.length < minReasonLength) return "";
-  const lower = reason.toLowerCase();
-  if (/[?]/.test(reason)) return "";
-  if (/\b(add|schedule|book|create|cancel|remove|delete|reschedule|move|shift|postpone|change|approve|approval|what|when|who|list|show)\b/.test(lower)) {
-    return "";
-  }
-  return reason;
-}
-
-function findSinglePendingReasonTarget(pendingChanges, userId, userEmail, message, settings) {
-  const minReasonLength = Number(settings?.auto?.minReasonLength ?? 0);
-  const reason = looksLikeStandaloneReason(message, minReasonLength);
-  if (!reason) return null;
-
-  const matches = (Array.isArray(pendingChanges) ? pendingChanges : []).filter(
-    (change) =>
-      change?.status === "pending" &&
-      pendingBelongsToUser(change, userId, userEmail) &&
-      missingPendingReason(change)
-  );
-
-  if (matches.length !== 1) return null;
-  return { pending: matches[0], reason };
 }
 
 function createPendingReasonResponse(pending) {
@@ -1221,28 +1194,6 @@ async function innerHandler(event, user) {
       approvalSettings.auto.requireReason === true;
 
     await writeUsage(store, userId, nextUsage);
-
-    const standalonePendingReason = findSinglePendingReasonTarget(
-      pendingChanges,
-      userId,
-      userEmail,
-      body.message,
-      approvalSettings
-    );
-    if (standalonePendingReason) {
-      const updatedPending = await attachReasonToPendingChange(
-        store,
-        pendingChanges,
-        standalonePendingReason.pending,
-        standalonePendingReason.reason,
-        body.message
-      );
-      return jsonResponse(200, {
-        ...createPendingReasonResponse(updatedPending),
-        limit: userLimit,
-        used: nextUsage.count,
-      });
-    }
 
     let action;
     let inferredReason = "";

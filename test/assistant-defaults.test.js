@@ -123,10 +123,10 @@ function createStoreMock(initialLessons, options = {}) {
 test("uses Netlify-safe defaults for AI reasoning allocation", () => {
   const assistant = loadAssistant();
   assert.deepEqual(assistant.__test.aiDefaults, {
-    requestTimeoutMs: 9000,
-    reasonTimeoutMs: 9000,
-    maxTokens: 1536,
-    reasonMaxTokens: 256,
+    requestTimeoutMs: 8500,
+    reasonTimeoutMs: 8500,
+    maxTokens: 768,
+    reasonMaxTokens: 160,
   });
 });
 
@@ -340,7 +340,7 @@ test("includes a small recent conversation window in the AI prompt", async () =>
   }
 });
 
-test("attaches a follow-up reason to a single pending request without AI", async () => {
+test("lets AI attach a follow-up reason to a single pending request", async () => {
   const store = createStoreMock([], {
     pendingChanges: [
       {
@@ -374,13 +374,39 @@ test("attaches a follow-up reason to a single pending request without AI", async
 
   const originalFetch = global.fetch;
   const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
-  let fetchCalls = 0;
+  let nimPrompt = "";
   process.env.NVIDIA_NIM_API_KEY = "test-key";
-  global.fetch = async () => {
-    fetchCalls += 1;
-    const err = new Error("NIM request timed out after 9000ms");
-    err.name = "AbortError";
-    throw err;
+  global.fetch = async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    nimPrompt = payload.messages.find((message) => message.role === "user").content;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "add",
+                  student: "Samuel",
+                  subject: "Cello",
+                  day_of_week: 4,
+                  start_time: "19:00",
+                  end_time: "20:00",
+                  old_start_time: null,
+                  old_end_time: null,
+                  recurring: true,
+                  specific_date: null,
+                  lesson_id: null,
+                  reason: "I have a competition coming up so i need extra time to prepare",
+                  reply: "I added that reason to your pending Cello with Samuel request.",
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
   };
 
   try {
@@ -405,7 +431,8 @@ test("attaches a follow-up reason to a single pending request without AI", async
       }),
     });
 
-    assert.equal(fetchCalls, 0);
+    assert.match(nimPrompt, /PENDING REQUESTS:/);
+    assert.match(nimPrompt, /id=14/);
     assert.equal(response.statusCode, 200, response.body);
     const body = JSON.parse(response.body);
     assert.equal(body.applied, false);
