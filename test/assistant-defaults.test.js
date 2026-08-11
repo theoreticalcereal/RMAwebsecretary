@@ -145,36 +145,77 @@ test("reschedules a lesson from subject, student, day, and bare old time", async
     },
   ]);
 
-  const assistant = loadAssistant({
-    "./_store": store.module,
-    "./_auth": {
-      async getSession() {
-        return { id: "user-1", email: "ricky@example.com" };
-      },
-    },
-    "./_notify": {
-      async notifyMaintainer() {
-        return { sent: false };
-      },
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                action: "reschedule",
+                student: "Ricky",
+                subject: "Cello",
+                day_of_week: 6,
+                start_time: "14:00",
+                end_time: null,
+                old_start_time: "18:30",
+                old_end_time: null,
+                recurring: true,
+                specific_date: null,
+                lesson_id: null,
+                reason: "I can go to my siblings wedding",
+                reply: "I moved Cello with Ricky to 2:00 PM.",
+              }),
+            },
+          },
+        ],
+      };
     },
   });
 
-  const response = await assistant.handler({
-    httpMethod: "POST",
-    body: JSON.stringify({
-      message:
-        "Can you reschedule cello with ricky at 6:30 on sunday to 2:00 pm so that I can go to my siblings wedding",
-    }),
-  });
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "ricky@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
 
-  assert.equal(response.statusCode, 201, response.body);
-  const body = JSON.parse(response.body);
-  assert.equal(body.applied, true);
-  assert.equal(body.lesson.id, 7);
-  assert.equal(body.lesson.start_time, "14:00");
-  assert.equal(body.lesson.end_time, "15:00");
-  assert.equal(body.action.lesson_id, 7);
-  assert.equal(body.action.reason, "I can go to my siblings wedding");
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message:
+          "Can you reschedule cello with ricky at 6:30 on sunday to 2:00 pm so that I can go to my siblings wedding",
+      }),
+    });
+
+    assert.equal(response.statusCode, 201, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.applied, true);
+    assert.equal(body.lesson.id, 7);
+    assert.equal(body.lesson.start_time, "14:00");
+    assert.equal(body.lesson.end_time, "15:00");
+    assert.equal(body.action.lesson_id, 7);
+    assert.equal(body.action.reason, "I can go to my siblings wedding");
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
 });
 
 test("lets AI interpret complete scheduling requests before quick parsers", async () => {
@@ -246,6 +287,54 @@ test("lets AI interpret complete scheduling requests before quick parsers", asyn
     assert.equal(body.lesson.student, "Avery");
     assert.equal(body.lesson.subject, "Geometry");
     assert.equal(body.action.reason, "Avery needs an extra weekly class before exams");
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("does not fall back to local keyword parsing when AI times out", async () => {
+  const store = createStoreMock([]);
+
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => {
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    throw err;
+  };
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "avery@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "add algebra with sam from 4 to 5 pm on tuesday because Avery needs an extra weekly class before exams",
+      }),
+    });
+
+    assert.equal(response.statusCode, 503, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.timedOut, true);
+    assert.equal(store.state.lessons.length, 0);
   } finally {
     global.fetch = originalFetch;
     if (originalApiKey === undefined) {

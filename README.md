@@ -37,7 +37,8 @@ there's no separate database to manage.
 - `netlify/functions/admin-stats.js`: admin-only usage stats for today
 - `netlify/functions/assistant.js`: the NIM-powered assistant, the only
   way public users can change the schedule or manage their own pending
-  assistant requests
+  assistant requests. NIM chooses from the supported tool actions; the
+  backend validates and executes only those actions.
 - `public/index.html`: public calendar + assistant
 - `public/admin/index.html`: session-gated admin dashboard
 

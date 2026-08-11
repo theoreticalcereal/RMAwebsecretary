@@ -39,17 +39,7 @@ const RECENT_CONVERSATION_LIMIT = 6;
 const RECENT_CONVERSATION_MESSAGE_MAX_CHARS = 600;
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const DAY_NAME_TO_INDEX = {
-  monday: 0,
-  tuesday: 1,
-  wednesday: 2,
-  thursday: 3,
-  friday: 4,
-  saturday: 5,
-  sunday: 6,
-};
-
-const SYSTEM_PROMPT = `You are a capable scheduling assistant for a lesson calendar. Interpret the user's request the way a thoughtful human assistant would: use context, resolve clear references, preserve the user's intent, and ask for only the missing detail that is actually needed. Convert the final decision into a single JSON action. Reply with ONLY the JSON object, no other text, no markdown fences.
+const SYSTEM_PROMPT = `You are a capable scheduling assistant for a lesson calendar. Interpret the user's request the way a thoughtful human assistant would: use context, resolve clear references, preserve the user's intent, and ask for only the missing detail that is actually needed. You may chat naturally in the "reply" field. Use schedule or pending-request tools only when the user asks for one of those actions. Reply with ONLY the JSON object, no other text, no markdown fences.
 
 Today's date is ${new Date().toISOString().slice(0, 10)}.
 
@@ -98,14 +88,6 @@ function parseDateAndTime(specificDate, startTime) {
   if (!specificDate || !startTime) return null;
   const dt = new Date(`${specificDate}T${startTime}:00`);
   return Number.isNaN(dt.getTime()) ? null : dt;
-}
-
-function parseDayFromMessage(message) {
-  const match = String(message || "").match(
-    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i
-  );
-  if (!match) return null;
-  return DAY_NAME_TO_INDEX[match[1].toLowerCase()];
 }
 
 function normalizeName(value) {
@@ -178,11 +160,6 @@ function addMinutesToTime(hhmm, addMinutes) {
   const h = Math.floor(total / 60);
   const m = total % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-function isNoopMessage(message) {
-  const lower = String(message || "").toLowerCase();
-  return /\b(hi|hello|hey|thanks|thank you|okay|ok)\b/.test(lower);
 }
 
 function isLikelyQuery(message) {
@@ -577,158 +554,6 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
   };
 }
 
-function parseTo24Hour(hour, minute, meridian) {
-  const h = Number(hour);
-  const m = Number(minute || 0);
-  const period = (meridian || "").toLowerCase();
-
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  if (m < 0 || m > 59) return null;
-  if (h < 0 || h > 23) return null;
-
-  if (period) {
-    if (h < 1 || h > 12) return null;
-    let hh = h;
-    if (period === "am") {
-      hh = h === 12 ? 0 : h;
-    } else if (period === "pm") {
-      hh = h === 12 ? 12 : h + 12;
-    }
-    return `${String(hh).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  }
-
-  if (h > 23) return null;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-function parseSimpleAddRequest(message) {
-  const normalized = message.trim().replace(/\s+/g, " ");
-  const lower = normalized.toLowerCase();
-
-  if (!/\b(schedule|add|book|create)\b/.test(lower)) return null;
-
-  const timeMatch = normalized.match(
-    /\b(?:from|between)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|-|until)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i
-  );
-  if (!timeMatch) return null;
-
-  const explicitStartPeriod = timeMatch[3];
-  const explicitEndPeriod = timeMatch[6];
-  const startPeriod = explicitStartPeriod || explicitEndPeriod;
-  const endPeriod = explicitEndPeriod || explicitStartPeriod || startPeriod;
-  const startTime = parseTo24Hour(timeMatch[1], timeMatch[2], startPeriod);
-  const endTime = parseTo24Hour(timeMatch[4], timeMatch[5], endPeriod);
-  if (!startTime || !endTime) return null;
-
-  const dayOfWeek = parseDayFromMessage(lower);
-  if (dayOfWeek === null) return null;
-
-  const schedulePattern = /\b(?:schedule|add|book|create)\s+(.+?)\s+(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:from|between)\b|$)/i;
-  const subjectStudentMatch = normalized.match(schedulePattern);
-
-  let subject = "Unnamed";
-  let student = "Unknown";
-  if (subjectStudentMatch) {
-    subject = (subjectStudentMatch[1] || "").trim() || subject;
-    student = (subjectStudentMatch[2] || "").replace(/\s+(from|between)\b.*$/i, "").trim() || student;
-  }
-  if (student.toLowerCase() === "me" || student.toLowerCase() === "the student") student = "Unknown";
-
-  return {
-    action: "add",
-    student,
-    subject,
-    day_of_week: dayOfWeek,
-    start_time: startTime,
-    end_time: endTime,
-    old_start_time: null,
-    old_end_time: null,
-    recurring: true,
-    specific_date: null,
-    lesson_id: null,
-    reply: `Got it. ${subject || "a lesson"} with ${student} on ${DAY_NAMES[dayOfWeek]} ${startTime}-${endTime}.`,
-  };
-}
-
-function parseSimpleRescheduleRequest(message) {
-  const normalized = message.trim().replace(/\s+/g, " ");
-  const lower = normalized.toLowerCase();
-  if (!/\b(reschedule|move|shift|postpone|change)\b/.test(lower)) return null;
-
-  const dayOfWeek = parseDayFromMessage(lower);
-  const specificDate = normalized.match(/\b(\d{4}-\d{2}-\d{2})\b/i)?.[1] || null;
-
-  const timeMatches = [...normalized.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/gi)];
-  if (timeMatches.length < 2) return null;
-
-  const beforeMatch = timeMatches[0];
-  const afterMatch = timeMatches[1];
-  const oldStartTime = parseTo24Hour(beforeMatch[1], beforeMatch[2], beforeMatch[3]);
-  const newStartTime = parseTo24Hour(afterMatch[1], afterMatch[2], afterMatch[3]);
-  if (!oldStartTime || !newStartTime) return null;
-
-  const subjectMatch = normalized.match(/\b(?:reschedule|move|shift|postpone|change)\s+([a-zA-Z][a-zA-Z'’.\- ]{1,40})\s+(?:with|for)/i);
-  const studentMatch = normalized.match(/\b(?:with|for)\s+([A-Za-z][A-Za-z'’.\- ]{1,60}?)(?:\s+(?:on|at|from|to|for|between|until)\b|$)/i);
-  const lessonIdMatch = normalized.match(/\b(?:lesson\s*(?:id\s*)?|id\s*)(\d+)\b/i);
-
-  return {
-    action: "reschedule",
-    student: studentMatch ? studentMatch[1].trim() : "",
-    subject: subjectMatch ? subjectMatch[1].trim() : "",
-    day_of_week: dayOfWeek,
-    start_time: newStartTime,
-    end_time: null,
-    old_start_time: oldStartTime,
-    old_end_time: null,
-    recurring: true,
-    specific_date: specificDate,
-    lesson_id: lessonIdMatch ? Number(lessonIdMatch[1]) : null,
-    reply: `Got it. Rescheduling ${subjectMatch ? subjectMatch[1] : "that lesson"} to ${newStartTime}.`,
-  };
-}
-
-function parseQuickQuery(message) {
-  const lower = String(message || "").toLowerCase();
-  if (isNoopMessage(lower) || /\b(what|when|who|list|show)\b/.test(lower)) {
-    return {
-      action: "query",
-      student: null,
-      subject: null,
-      day_of_week: null,
-      start_time: null,
-      end_time: null,
-      old_start_time: null,
-      old_end_time: null,
-      recurring: true,
-      specific_date: null,
-      lesson_id: null,
-      reply: "I can help with the schedule. Ask me to add, cancel, or reschedule a lesson.",
-    };
-  }
-  return null;
-}
-
-function parseQuickAction(message) {
-  const quickQuery = parseQuickQuery(message);
-  const fastAdd = parseSimpleAddRequest(message);
-  const fastReschedule = parseSimpleRescheduleRequest(message);
-  return fastAdd || fastReschedule || quickQuery;
-}
-
-function isFastActionComplete(action) {
-  if (!action) return false;
-  if (action.action === "add") {
-    return action.day_of_week !== null && action.day_of_week !== undefined && !!action.start_time && !!action.end_time;
-  }
-  if (action.action === "reschedule") {
-    return !!action.start_time;
-  }
-  if (action.action === "cancel") {
-    return action.lesson_id || action.student || action.subject;
-  }
-  return action.action === "query" || action.action === "delete";
-}
-
 function inferLessonMinutes(startTime, endTime) {
   const start = toMinutes(startTime);
   const end = toMinutes(endTime);
@@ -755,56 +580,25 @@ function enrichParsedAction(action, lessons) {
   return enriched;
 }
 
-async function parseActionTwoStage(message, lessons, store, requiresAiReason, pendingChanges = [], recentConversation = []) {
-  const stage1 = parseQuickAction(message);
-
-  if (stage1 && stage1.action === "query" && isNoopMessage(message)) {
-    return { action: stage1, reason: "", usedAi: false };
-  }
-
+async function parseActionTwoStage(message, lessons, store, pendingChanges = [], recentConversation = []) {
   const apiKey = process.env.NVIDIA_NIM_API_KEY;
   if (!apiKey) {
-    const fallback = parseActionWithQuickFallback(stage1, lessons, message, requiresAiReason);
-    if (fallback) return fallback;
     throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
   }
 
-  try {
-    const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges, recentConversation });
-    const resolvedAction = enrichParsedAction(stage2 || { action: "unknown", reason: null }, lessons);
-    const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
-    const reason = inferredReason || inferReasonFromUserMessage(message);
+  const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges, recentConversation });
+  const resolvedAction = enrichParsedAction(stage2 || { action: "unknown", reason: null }, lessons);
+  const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
+  const reason = inferredReason || inferReasonFromUserMessage(message);
 
-    if (resolvedAction) {
-      resolvedAction.reason = reason || null;
-    }
-
-    return {
-      action: resolvedAction,
-      reason: reason,
-      usedAi: true,
-    };
-  } catch (err) {
-    if (err.rateLimited) throw err;
-    const fallback = parseActionWithQuickFallback(stage1, lessons, message, requiresAiReason);
-    if (fallback) return { ...fallback, usedAi: true };
-    throw err;
-  }
-}
-
-function parseActionWithQuickFallback(stage1, lessons, message, requiresAiReason) {
-  if (!stage1 || !isFastActionComplete(stage1)) return null;
-
-  const quickAction = enrichParsedAction(stage1, lessons);
-  const fastReason = requiresAiReason ? inferReasonFromUserMessage(message) : "";
-  if (fastReason) {
-    quickAction.reason = fastReason;
+  if (resolvedAction) {
+    resolvedAction.reason = reason || null;
   }
 
   return {
-    action: quickAction,
-    reason: fastReason || "",
-    usedAi: false,
+    action: resolvedAction,
+    reason: reason,
+    usedAi: true,
   };
 }
 
@@ -1161,11 +955,6 @@ async function innerHandler(event, user) {
     }
 
     const nextUsage = { ...usage, userEmail, count: usage.count + 1 };
-    const requiresAiReason =
-      approvalSettings.mode === "automatic" &&
-      approvalSettings.auto &&
-      approvalSettings.auto.requireReason === true;
-
     await writeUsage(store, userId, nextUsage);
 
     let action;
@@ -1175,7 +964,6 @@ async function innerHandler(event, user) {
         body.message,
         lessons,
         store,
-        requiresAiReason,
         pendingChanges,
         body.history
       );
