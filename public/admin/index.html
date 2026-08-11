@@ -6,15 +6,19 @@
 <title>Lesson Secretary Admin Dashboard</title>
 <style>
   :root {
-    --border: #d8dee4;
-    --bg: #f7f8fa;
+    --border: #d9e0e8;
+    --bg: #eef2f6;
     --card: #ffffff;
-    --accent: #2563eb;
-    --accent-light: #eaf1ff;
-    --text: #1f2430;
-    --muted: #6b7280;
-    --danger: #dc2626;
+    --accent: #315fce;
+    --accent-light: #e7efff;
+    --text: #18202c;
+    --muted: #687487;
+    --danger: #c93636;
+    --surface: #f8fafc;
+    --accent-strong: #2348a3;
+    --shadow: 0 18px 45px rgba(31, 41, 55, 0.08);
   }
+  * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -22,21 +26,23 @@
     color: var(--text);
   }
   header {
-    padding: 20px 24px;
+    padding: 22px 24px;
     border-bottom: 1px solid var(--border);
-    background: var(--card);
+    background: #142033;
+    color: #fff;
   }
-  header h1 { margin: 0; font-size: 1.3rem; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+  header h1 { margin: 0; font-size: 1.45rem; font-weight: 750; }
+  header p { margin: 5px 0 0; color: #bfcee2; font-size: 0.92rem; }
 
-  main { max-width: 1000px; margin: 0 auto; padding: 24px; }
+  main { max-width: 1120px; margin: 0 auto; padding: 28px 24px 36px; }
 
   .login-box {
     max-width: 520px;
     margin: 60px auto;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
+    box-shadow: var(--shadow);
     padding: 24px;
   }
   .login-box h2 { margin: 0 0 12px; font-size: 1.05rem; }
@@ -47,20 +53,43 @@
   }
   .auth-row input,
   .login-box input {
-    padding: 10px 12px;
+    min-width: 0;
+    padding: 11px 12px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 0.95rem;
     flex: 1;
   }
   .login-box button {
-    padding: 10px 14px;
+    padding: 11px 15px;
     background: var(--accent);
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 0.92rem;
     cursor: pointer;
+  }
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+  button,
+  input,
+  select {
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  }
+  input:focus,
+  select:focus,
+  button:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(49, 95, 206, 0.16);
+  }
+  .login-box button:hover,
+  .add-form button:hover,
+  .settings-form button:hover {
+    background: var(--accent-strong);
   }
   .login-status {
     font-size: 0.8rem;
@@ -87,8 +116,9 @@
   .stat-card {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px;
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(31, 41, 55, 0.05);
+    padding: 15px;
   }
   .stat-card .value { font-size: 1.6rem; font-weight: 700; }
   .stat-card .label { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
@@ -98,7 +128,7 @@
     border-collapse: collapse;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     overflow: hidden;
     margin-bottom: 24px;
     font-size: 0.85rem;
@@ -108,7 +138,7 @@
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
   }
-  .usage-table th { background: #f0f2f5; color: var(--muted); font-weight: 600; }
+  .usage-table th { background: #edf1f6; color: var(--muted); font-weight: 650; }
   .usage-table tr:last-child td { border-bottom: none; }
 
   .pending-table {
@@ -116,7 +146,7 @@
     border-collapse: collapse;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     overflow: hidden;
     margin-bottom: 24px;
     font-size: 0.82rem;
@@ -127,14 +157,14 @@
     border-bottom: 1px solid var(--border);
     vertical-align: top;
   }
-  .pending-table th { background: #f0f2f5; color: var(--muted); font-size: 0.78rem; }
+  .pending-table th { background: #edf1f6; color: var(--muted); font-size: 0.78rem; }
   .pending-table tr:last-child td { border-bottom: none; }
   .pending-actions button {
     margin-right: 6px;
     border: 1px solid var(--border);
     background: #fff;
     padding: 5px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-size: 0.75rem;
     cursor: pointer;
   }
@@ -149,7 +179,7 @@
     border-collapse: collapse;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     overflow: hidden;
     margin-bottom: 24px;
     font-size: 0.82rem;
@@ -160,20 +190,20 @@
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
   }
-  .identity-table th { background: #f0f2f5; color: var(--muted); font-size: 0.78rem; }
+  .identity-table th { background: #edf1f6; color: var(--muted); font-size: 0.78rem; }
   .identity-table tr:last-child td { border-bottom: none; }
 
   .usage-table input[type="number"] {
     width: 70px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 6px;
     font-size: 0.78rem;
   }
   .usage-table .inline-btn {
     border: 1px solid var(--border);
     background: #fff;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 7px;
     font-size: 0.74rem;
     margin-right: 5px;
@@ -183,7 +213,7 @@
   .identity-table input[type="email"] {
     width: 100%;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 5px 7px;
     font-size: 0.8rem;
   }
@@ -191,14 +221,22 @@
     border: 1px solid var(--border);
     background: #fff;
     padding: 5px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
     font-size: 0.75rem;
     cursor: pointer;
+  }
+  .pending-actions button:hover,
+  .usage-table .inline-btn:hover,
+  .identity-table button:hover,
+  .section-heading .toggle-btn:hover,
+  .dashboard-head button:hover {
+    background: var(--surface);
   }
 
   .section-heading {
     font-size: 1rem;
-    margin: 24px 0 12px;
+    margin: 26px 0 12px;
+    font-weight: 720;
   }
 
   .calendar {
@@ -210,8 +248,9 @@
   .day-col {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px;
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(31, 41, 55, 0.05);
+    padding: 11px;
     min-height: 120px;
   }
   .day-col h3 {
@@ -223,13 +262,14 @@
   }
   .lesson-card {
     background: var(--accent-light);
+    border-left: 3px solid var(--accent);
     border-radius: 6px;
-    padding: 6px 8px;
-    margin-bottom: 6px;
+    padding: 7px 8px;
+    margin-bottom: 7px;
     font-size: 0.8rem;
     position: relative;
   }
-  .lesson-card .time { font-weight: 600; }
+  .lesson-card .time { font-weight: 650; }
   .lesson-card .student { display: block; }
   .lesson-card .subject { color: var(--muted); font-size: 0.75rem; }
   .lesson-card .del-btn {
@@ -248,7 +288,8 @@
   .add-form {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(31, 41, 55, 0.05);
     padding: 16px;
     margin-bottom: 24px;
   }
@@ -260,14 +301,14 @@
     margin-bottom: 10px;
   }
   .add-form input, .add-form select {
-    padding: 8px 10px;
+    padding: 9px 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 0.9rem;
   }
   .add-form button {
     padding: 9px 16px;
-    background: var(--text);
+    background: var(--accent);
     color: white;
     border: none;
     border-radius: 6px;
@@ -277,7 +318,8 @@
   .settings-form {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
+    box-shadow: 0 10px 24px rgba(31, 41, 55, 0.05);
     padding: 16px;
     margin-bottom: 12px;
   }
@@ -296,7 +338,7 @@
   .settings-form input[type="number"],
   .settings-form select {
     width: 100%;
-    padding: 8px 10px;
+    padding: 9px 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 0.9rem;
@@ -306,7 +348,7 @@
   }
   .settings-form button {
     padding: 9px 16px;
-    background: var(--text);
+    background: var(--accent);
     color: white;
     border: none;
     border-radius: 6px;
@@ -317,7 +359,7 @@
     font-weight: normal;
     border: 1px solid var(--border);
     background: #fff;
-    border-radius: 999px;
+    border-radius: 6px;
     padding: 4px 10px;
     margin-left: 8px;
     font-size: 0.78rem;
@@ -353,7 +395,7 @@
   .dashboard-head button {
     border: 1px solid var(--border);
     background: #fff;
-    border-radius: 999px;
+    border-radius: 6px;
     padding: 6px 12px;
     font-size: 0.8rem;
     cursor: pointer;
@@ -361,6 +403,25 @@
 
   @media (max-width: 800px) {
     .calendar { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 620px) {
+    main { padding: 18px 14px 28px; }
+    header { padding: 18px 16px; }
+    .auth-row {
+      flex-direction: column;
+    }
+    .login-box {
+      margin: 26px auto;
+      padding: 18px;
+    }
+    .login-box button {
+      width: 100%;
+    }
+    .dashboard-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .calendar { grid-template-columns: 1fr; }
   }
 </style>
 </head>

@@ -177,6 +177,85 @@ test("reschedules a lesson from subject, student, day, and bare old time", async
   assert.equal(body.action.reason, "I can go to my siblings wedding");
 });
 
+test("lets AI interpret complete scheduling requests before quick parsers", async () => {
+  const store = createStoreMock([]);
+
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  let nimPrompt = "";
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    nimPrompt = payload.messages.find((message) => message.role === "user").content;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  action: "add",
+                  student: "Avery",
+                  subject: "Geometry",
+                  day_of_week: 1,
+                  start_time: "16:00",
+                  end_time: "17:00",
+                  old_start_time: null,
+                  old_end_time: null,
+                  recurring: true,
+                  specific_date: null,
+                  lesson_id: null,
+                  reason: "Avery needs an extra weekly class before exams",
+                  reply: "I added Geometry with Avery on Tuesday from 4:00 to 5:00 PM.",
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "avery@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "add algebra with sam from 4 to 5 pm on tuesday because Avery needs an extra weekly class before exams",
+      }),
+    });
+
+    assert.match(nimPrompt, /USER REQUEST:/);
+    assert.equal(response.statusCode, 201, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.applied, true);
+    assert.equal(body.lesson.student, "Avery");
+    assert.equal(body.lesson.subject, "Geometry");
+    assert.equal(body.action.reason, "Avery needs an extra weekly class before exams");
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
 test("lets AI use pending request context to add a follow-up reason", async () => {
   const store = createStoreMock([], {
     pendingChanges: [

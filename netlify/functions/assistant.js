@@ -47,7 +47,7 @@ const DAY_NAME_TO_INDEX = {
   sunday: 6,
 };
 
-const SYSTEM_PROMPT = `You are a scheduling assistant for a lesson calendar. You convert a user's natural-language request into a single JSON action. Reply with ONLY the JSON object, no other text, no markdown fences.
+const SYSTEM_PROMPT = `You are a capable scheduling assistant for a lesson calendar. Interpret the user's request the way a thoughtful human assistant would: use context, resolve clear references, preserve the user's intent, and ask for only the missing detail that is actually needed. Convert the final decision into a single JSON action. Reply with ONLY the JSON object, no other text, no markdown fences.
 
 Today's date is ${new Date().toISOString().slice(0, 10)}.
 
@@ -73,13 +73,14 @@ Rules:
 - "cancel" means cancel a single upcoming occurrence of an existing recurring lesson (needs lesson_id and specific_date if you can determine them from context; otherwise set action to "unknown" and ask in "reply").
 - "delete" means remove a recurring lesson entirely.
 - "reschedule" means adjust an existing lesson's times. Use lesson_id if possible, otherwise include subject/student.
-- "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful answer using the CURRENT LESSONS provided below, action "query".
+- "query" means the user is just asking a question (e.g. "what's on Tuesday") — set reply to a helpful, conversational answer using the CURRENT LESSONS provided below, action "query".
 - Use PENDING REQUESTS as conversation context. If the user says "it", "that", gives a missing reason, or asks about approval, infer which pending request they mean when there is a clear match.
 - If the user provides the missing reason for a pending request, return that pending request's original action with the new "reason" filled in.
 - If the user asks to approve a pending request and does not clearly have maintainer/admin authority, use action "query" and explain that the pending request still needs maintainer review.
-- If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask a clarifying question in "reply".
+- If the request is ambiguous or missing required info (e.g. no time given), use action "unknown" and ask one natural clarifying question in "reply".
 - Never invent a lesson_id — only use one that appears in CURRENT LESSONS below.
-- Include a "reason" value whenever the request contains a natural-language reason (for example, phrases like "because", "since", "so that", or "for"), even if short. Use null only when no reason is present.`;
+- Include a "reason" value whenever the request contains a natural-language reason (for example, phrases like "because", "since", "so that", or "for"), even if short. Use null only when no reason is present.
+- Make "reply" sound like a concise assistant response, not a rule label or parser trace.`;
 
 function nowInMs() {
   return Date.now();
@@ -781,71 +782,53 @@ function enrichParsedAction(action, lessons) {
 async function parseActionTwoStage(message, lessons, store, requiresAiReason, pendingChanges = []) {
   const stage1 = parseQuickAction(message);
 
-  if (stage1 && stage1.action === "query") {
+  if (stage1 && stage1.action === "query" && isNoopMessage(message)) {
     return { action: stage1, reason: "", usedAi: false };
-  }
-
-  if (stage1 && isFastActionComplete(stage1)) {
-    const quickAction = enrichParsedAction(stage1, lessons);
-
-    if (!requiresAiReason) {
-      return { action: quickAction, reason: "", usedAi: false };
-    }
-
-    const fastReason = inferReasonFromUserMessage(message);
-    if (fastReason) {
-      const withReason = cloneAction(quickAction);
-      withReason.reason = fastReason;
-      return { action: withReason, reason: fastReason, usedAi: false };
-    }
   }
 
   const apiKey = process.env.NVIDIA_NIM_API_KEY;
   if (!apiKey) {
+    const fallback = parseActionWithQuickFallback(stage1, lessons, message, requiresAiReason);
+    if (fallback) return fallback;
     throw new Error("NVIDIA_NIM_API_KEY is not set in environment");
   }
 
-  if (stage1 && isFastActionComplete(stage1) && requiresAiReason) {
-    try {
-      const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges });
-      const resolvedAction = enrichParsedAction(stage2 || stage1 || { action: "unknown", reason: null }, lessons);
-      const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
-      const reason = inferredReason || inferReasonFromUserMessage(message);
+  try {
+    const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges });
+    const resolvedAction = enrichParsedAction(stage2 || { action: "unknown", reason: null }, lessons);
+    const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
+    const reason = inferredReason || inferReasonFromUserMessage(message);
 
-      if (resolvedAction) {
-        resolvedAction.reason = reason || null;
-      }
-
-      return {
-        action: resolvedAction,
-        reason: reason,
-        usedAi: true,
-      };
-    } catch (err) {
-      if (err.rateLimited) throw err;
-      const quickAction = enrichParsedAction(stage1, lessons);
-      if (quickAction) {
-        const fastReason = inferReasonFromUserMessage(message) || null;
-        quickAction.reason = fastReason;
-        return { action: quickAction, reason: fastReason || "", usedAi: true };
-      }
-      throw err;
+    if (resolvedAction) {
+      resolvedAction.reason = reason || null;
     }
+
+    return {
+      action: resolvedAction,
+      reason: reason,
+      usedAi: true,
+    };
+  } catch (err) {
+    if (err.rateLimited) throw err;
+    const fallback = parseActionWithQuickFallback(stage1, lessons, message, requiresAiReason);
+    if (fallback) return { ...fallback, usedAi: true };
+    throw err;
   }
+}
 
-  const stage2 = await parseActionFromAi(message, lessons, store, true, { pendingChanges });
-  const resolvedAction = enrichParsedAction(stage2 || stage1 || { action: "unknown", reason: null }, lessons);
-  const inferredReason = normalizeReason(resolvedAction && resolvedAction.reason);
-  const reason = inferredReason || inferReasonFromUserMessage(message);
+function parseActionWithQuickFallback(stage1, lessons, message, requiresAiReason) {
+  if (!stage1 || !isFastActionComplete(stage1)) return null;
 
-  if (resolvedAction) {
-    resolvedAction.reason = reason || null;
+  const quickAction = enrichParsedAction(stage1, lessons);
+  const fastReason = requiresAiReason ? inferReasonFromUserMessage(message) : "";
+  if (fastReason) {
+    quickAction.reason = fastReason;
   }
 
   return {
-    action: resolvedAction,
-    reason: reason,
-    usedAi: true,
+    action: quickAction,
+    reason: fastReason || "",
+    usedAi: false,
   };
 }
 

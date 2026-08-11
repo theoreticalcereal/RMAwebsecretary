@@ -6,15 +6,18 @@
 <title>Lesson Secretary</title>
 <style>
   :root {
-    --border: #d8dee4;
-    --bg: #f7f8fa;
+    --border: #d9e0e8;
+    --bg: #eef2f6;
     --card: #ffffff;
-    --accent: #2563eb;
-    --accent-light: #eaf1ff;
-    --text: #1f2430;
-    --muted: #6b7280;
-    --danger: #dc2626;
-    --success: #0f7a4f;
+    --surface: #f8fafc;
+    --accent: #315fce;
+    --accent-strong: #2348a3;
+    --accent-light: #e7efff;
+    --text: #18202c;
+    --muted: #687487;
+    --danger: #c93636;
+    --success: #147251;
+    --shadow: 0 18px 45px rgba(31, 41, 55, 0.08);
   }
   * { box-sizing: border-box; }
   body {
@@ -24,25 +27,27 @@
     color: var(--text);
   }
   header {
-    padding: 20px 24px;
+    padding: 22px 24px;
     border-bottom: 1px solid var(--border);
-    background: var(--card);
+    background: #142033;
+    color: #fff;
   }
-  header h1 { margin: 0; font-size: 1.3rem; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+  header h1 { margin: 0; font-size: 1.45rem; font-weight: 750; }
+  header p { margin: 5px 0 0; color: #bfcee2; font-size: 0.92rem; }
 
   main {
-    max-width: 1000px;
+    max-width: 1120px;
     margin: 0 auto;
-    padding: 24px;
+    padding: 28px 24px 36px;
   }
 
   .assistant-box {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    margin-bottom: 24px;
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 18px;
+    margin-bottom: 26px;
   }
 
   .hidden { display: none !important; }
@@ -54,19 +59,38 @@
     margin-bottom: 10px;
   }
   .auth-box input {
-    padding: 10px 12px;
+    padding: 11px 12px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 0.95rem;
   }
   .auth-box button {
-    padding: 10px 14px;
+    padding: 11px 15px;
     background: var(--accent);
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 0.92rem;
     cursor: pointer;
+  }
+  .auth-box button:hover,
+  .assistant-box button.send-btn:hover {
+    background: var(--accent-strong);
+  }
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+  button,
+  input {
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  }
+  input:focus,
+  button:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(49, 95, 206, 0.16);
   }
   .auth-status {
     font-size: 0.8rem;
@@ -88,38 +112,43 @@
   .chat-header button {
     border: 1px solid var(--border);
     background: #fff;
-    border-radius: 999px;
+    border-radius: 6px;
     padding: 6px 12px;
     font-size: 0.8rem;
     cursor: pointer;
   }
+  .chat-header button:hover { background: var(--surface); }
 
   .assistant-conversation {
-    min-height: 140px;
-    max-height: 380px;
+    min-height: 180px;
+    max-height: 420px;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 12px;
-    background: #fbfcff;
-    margin-bottom: 10px;
+    padding: 14px;
+    background: var(--surface);
+    margin-bottom: 12px;
   }
   .message {
-    margin-bottom: 10px;
-    line-height: 1.35;
+    display: flex;
+    margin-bottom: 11px;
+    line-height: 1.42;
     font-size: 0.9rem;
   }
   .bubble {
-    border-radius: 10px;
-    padding: 8px 10px;
+    border-radius: 8px;
+    padding: 9px 11px;
     display: inline-block;
-    max-width: 90%;
+    max-width: min(88%, 680px);
     white-space: pre-wrap;
     word-wrap: break-word;
   }
+  .message.user { justify-content: flex-end; }
+  .message.assistant,
+  .message.system { justify-content: flex-start; }
   .message.user .bubble {
-    background: #dfeafe;
-    color: #1d3f90;
+    background: var(--accent);
+    color: #fff;
   }
   .message.assistant .bubble {
     background: var(--card);
@@ -131,8 +160,8 @@
     color: var(--danger);
   }
   .message.system .bubble {
-    background: #eef6ff;
-    border: 1px solid #cfe2ff;
+    background: #ecf6f2;
+    border: 1px solid #cfe4dc;
     color: var(--muted);
   }
   .message code { font-family: ui-monospace, Menlo, Consolas, monospace; }
@@ -140,17 +169,18 @@
   .assistant-box form { display: flex; gap: 8px; }
   .assistant-box input[type="text"] {
     flex: 1;
-    padding: 10px 12px;
+    min-width: 0;
+    padding: 12px 13px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 0.95rem;
   }
   .assistant-box button.send-btn {
-    padding: 10px 18px;
+    padding: 12px 18px;
     background: var(--accent);
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     font-size: 0.95rem;
     cursor: pointer;
   }
@@ -187,21 +217,22 @@
     border-bottom: 1px solid var(--border);
     vertical-align: top;
   }
-  .requests-table th { background: #f0f2f5; color: var(--muted); }
+  .requests-table th { background: #edf1f6; color: var(--muted); font-weight: 650; }
   .requests-table tr:last-child td { border-bottom: none; }
   .requests-empty { color: var(--muted); font-size: 0.78rem; margin-top: 6px; }
 
   .calendar {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    gap: 10px;
+    gap: 12px;
   }
   .day-col {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px;
+    border-radius: 8px;
+    padding: 11px;
     min-height: 140px;
+    box-shadow: 0 10px 24px rgba(31, 41, 55, 0.05);
   }
   .day-col h3 {
     margin: 0 0 8px;
@@ -212,9 +243,10 @@
   }
   .lesson-card {
     background: var(--accent-light);
+    border-left: 3px solid var(--accent);
     border-radius: 6px;
-    padding: 6px 8px;
-    margin-bottom: 6px;
+    padding: 7px 8px;
+    margin-bottom: 7px;
     font-size: 0.82rem;
   }
   .lesson-card .time { font-weight: 600; }
@@ -235,6 +267,20 @@
 
   @media (max-width: 800px) {
     .calendar { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 620px) {
+    main { padding: 18px 14px 28px; }
+    header { padding: 18px 16px; }
+    .auth-row,
+    .assistant-box form {
+      flex-direction: column;
+    }
+    .assistant-box button.send-btn,
+    .auth-box button {
+      width: 100%;
+    }
+    .calendar { grid-template-columns: 1fr; }
+    .bubble { max-width: 94%; }
   }
 </style>
 </head>
