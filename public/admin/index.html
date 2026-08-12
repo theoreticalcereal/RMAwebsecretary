@@ -394,6 +394,10 @@
     margin-bottom: 16px;
     display: none;
   }
+  .error-banner.info {
+    background: #ecf6f2;
+    color: #147251;
+  }
   .error-banner.show { display: block; }
 
   .dashboard-head {
@@ -658,11 +662,21 @@ function escapeHtml(str) {
 function showError(message) {
   const el = document.getElementById("error-banner");
   el.textContent = message;
+  el.classList.remove("info");
+  el.classList.add("show");
+}
+
+function showInfo(message) {
+  const el = document.getElementById("error-banner");
+  el.textContent = message;
+  el.classList.add("info");
   el.classList.add("show");
 }
 
 function clearError() {
-  document.getElementById("error-banner").classList.remove("show");
+  const el = document.getElementById("error-banner");
+  el.classList.remove("show");
+  el.classList.remove("info");
 }
 
 function setAuthStatus(message) {
@@ -1031,6 +1045,9 @@ function renderOffTimeRows(windows) {
 
   tbody.querySelectorAll("button[data-auto-resolve-id]").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Resolving...";
       try {
         const result = await adminFetch("/api/admin-lessons", {
           method: "POST",
@@ -1043,11 +1060,18 @@ function renderOffTimeRows(windows) {
         const skipped = Array.isArray(result.proposedReschedules)
           ? result.proposedReschedules.filter((item) => item.skipped).length
           : 0;
-        clearError();
-        if (skipped) showError(`Auto-resolve created ${created} proposal(s); ${skipped} lesson(s) had no available slot.`);
-        refreshAll();
+        if (created > 0) state.pendingOpen = true;
+        await refreshAll();
+        if (created || skipped) {
+          showInfo(`Auto-resolve created ${created} proposal(s).${skipped ? ` ${skipped} lesson(s) had no available slot.` : ""}`);
+        } else {
+          showInfo("Auto-resolve found no new proposals to create.");
+        }
       } catch (err) {
         showError(`Couldn't auto-resolve off-time window: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
       }
     });
   });
