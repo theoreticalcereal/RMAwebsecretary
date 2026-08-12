@@ -96,7 +96,7 @@
 
 - [ ] Write failing tests for adding an off-time window and listing affected active lessons.
 - [ ] Implement store helpers and admin operations `save_offtime_window` and `delete_offtime_window`.
-- [ ] Add admin form/table for dated and weekly unavailable windows.
+- [ ] Add admin form/table for weekly unavailable windows.
 - [ ] Return affected lessons for maintainer review.
 
 ### Task 6: AI Renegotiation Scaffolding
@@ -113,4 +113,3 @@
 - [ ] Write failing tests that off-time proposal creates pending reschedule requests instead of directly moving lessons.
 - [ ] Implement deterministic pending request generation for affected lessons with notes requiring user/maintainer confirmation.
 - [ ] Keep any AI-suggested exact times reviewable through existing pending approval flow.
-

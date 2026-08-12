@@ -82,7 +82,9 @@ function validateLesson(body) {
 }
 
 function normalizeOffTimeWindow(raw, id) {
-  const kind = raw?.kind === "dated" ? "dated" : "weekly";
+  if (raw?.kind && raw.kind !== "weekly") {
+    return { error: "Off-time windows are weekly-only." };
+  }
   const start_time = String(raw?.start_time || "").trim();
   const end_time = String(raw?.end_time || "").trim();
   if (!/^\d{2}:\d{2}$/.test(start_time) || !/^\d{2}:\d{2}$/.test(end_time) || start_time >= end_time) {
@@ -91,27 +93,19 @@ function normalizeOffTimeWindow(raw, id) {
 
   const normalized = {
     id,
-    kind,
+    kind: "weekly",
     start_time,
     end_time,
     note: String(raw?.note || "").trim() || null,
     createdAt: raw?.createdAt || new Date().toISOString(),
   };
 
-  if (kind === "dated") {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(raw?.specific_date || ""))) {
-      return { error: "specific_date is required for dated off-time windows" };
-    }
-    normalized.specific_date = raw.specific_date;
-    normalized.day_of_week = (new Date(`${raw.specific_date}T00:00:00`).getDay() + 6) % 7;
-  } else {
-    const day = Number(raw?.day_of_week);
-    if (!Number.isInteger(day) || day < 0 || day > 6) {
-      return { error: "day_of_week must be 0-6 for weekly off-time windows" };
-    }
-    normalized.day_of_week = day;
-    normalized.specific_date = null;
+  const day = Number(raw?.day_of_week);
+  if (!Number.isInteger(day) || day < 0 || day > 6) {
+    return { error: "day_of_week must be 0-6 for weekly off-time windows" };
   }
+  normalized.day_of_week = day;
+  normalized.specific_date = null;
 
   return { window: normalized };
 }
@@ -120,7 +114,6 @@ function lessonsAffectedByOffTime(lessons, window) {
   return lessons.filter((lesson) => {
     if (lesson.active === false) return false;
     if (lesson.day_of_week !== window.day_of_week) return false;
-    if (window.kind === "dated" && lesson.specific_date && lesson.specific_date !== window.specific_date) return false;
     return timesOverlap(lesson.start_time, lesson.end_time, window.start_time, window.end_time);
   });
 }
@@ -253,7 +246,6 @@ async function createOffTimeRescheduleProposals({ store, lessons, window, pendin
 
 function formatOffTimeLabel(window) {
   const time = `${window.start_time}-${window.end_time}`;
-  if (window.kind === "dated") return `${window.specific_date} ${time}`;
   return `${DAY_NAMES[window.day_of_week] || "Unknown"} ${time}`;
 }
 

@@ -547,13 +547,6 @@
     <div class="settings-form">
       <form id="offtime-form" class="row">
         <div>
-          <label for="offtime-kind">Type</label>
-          <select id="offtime-kind">
-            <option value="weekly">Weekly</option>
-            <option value="dated">Specific date</option>
-          </select>
-        </div>
-        <div>
           <label for="offtime-day">Day</label>
           <select id="offtime-day">
             <option value="0">Monday</option>
@@ -564,10 +557,6 @@
             <option value="5">Saturday</option>
             <option value="6">Sunday</option>
           </select>
-        </div>
-        <div>
-          <label for="offtime-date">Date</label>
-          <input id="offtime-date" type="date" />
         </div>
         <div>
           <label for="offtime-start">Start</label>
@@ -1007,7 +996,6 @@ function renderPendingRows(pendingChanges) {
 function formatOffTimeWindow(window) {
   if (!window) return "";
   const time = `${formatTime(window.start_time)}-${formatTime(window.end_time)}`;
-  if (window.kind === "dated") return `${window.specific_date} ${time}`;
   return `${DAY_NAMES[window.day_of_week] || "Unknown"} ${time}`;
 }
 
@@ -1256,19 +1244,13 @@ document.getElementById("save-approval-settings").addEventListener("click", asyn
 });
 
 document.getElementById("save-offtime-window").addEventListener("click", async () => {
-  const kind = document.getElementById("offtime-kind").value;
   const window = {
-    kind,
+    kind: "weekly",
     day_of_week: Number(document.getElementById("offtime-day").value),
-    specific_date: document.getElementById("offtime-date").value || null,
     start_time: document.getElementById("offtime-start").value,
     end_time: document.getElementById("offtime-end").value,
     note: document.getElementById("offtime-note").value,
   };
-  if (kind === "dated" && !window.specific_date) {
-    showError("Date is required for specific-date off-time.");
-    return;
-  }
   try {
     await adminFetch("/api/admin-lessons", {
       method: "POST",

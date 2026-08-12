@@ -226,6 +226,41 @@ test("saving off-time automatically proposes reschedules and emails affected use
   assert.equal(emails[0].proposedAction.start_time, "15:30");
 });
 
+test("admin off-time rejects date-specific windows because schedule is weekly-only", async () => {
+  const store = createAdminStoreMock();
+  const admin = loadAdminLessons({
+    "./_store": store.module,
+    "./_auth": {
+      async getAdminSession() {
+        return { ok: true, user: { email: "admin@example.com" } };
+      },
+    },
+    "./_notify": {
+      async sendOffTimeProposalEmail() {
+        return { sent: false, reason: "test noop" };
+      },
+    },
+  });
+
+  const response = await admin.handler({
+    httpMethod: "POST",
+    body: JSON.stringify({
+      operation: "save_offtime_window",
+      window: {
+        kind: "dated",
+        specific_date: "2026-09-04",
+        start_time: "13:30",
+        end_time: "15:30",
+      },
+    }),
+  });
+
+  assert.equal(response.statusCode, 400, response.body);
+  assert.match(JSON.parse(response.body).error, /weekly-only/i);
+  assert.equal(store.state.offTimeWindows.length, 0);
+  assert.equal(store.state.pendingChanges.length, 0);
+});
+
 test("admin can delete off-time windows", async () => {
   const store = createAdminStoreMock();
   store.state.offTimeWindows = [
