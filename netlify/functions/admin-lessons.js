@@ -13,6 +13,8 @@ const {
   resetAllUsage,
   readApprovalSettings,
   writeApprovalSettings,
+  readOffTimeWindows,
+  writeOffTimeWindows,
   readPendingChanges,
   writePendingChanges,
   filterVisiblePendingChanges,
@@ -23,6 +25,7 @@ const {
   timesOverlap,
 } = require("./_store");
 const { getAdminSession } = require("./_auth");
+const { sendOffTimeProposalEmail } = require("./_notify");
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SUPPORTED_MODES = new Set(["manual", "automatic"]);
@@ -76,6 +79,182 @@ function validateLesson(body) {
     errors.push("start_time must be before end_time");
   }
   return errors;
+}
+
+function normalizeOffTimeWindow(raw, id) {
+  const kind = raw?.kind === "dated" ? "dated" : "weekly";
+  const start_time = String(raw?.start_time || "").trim();
+  const end_time = String(raw?.end_time || "").trim();
+  if (!/^\d{2}:\d{2}$/.test(start_time) || !/^\d{2}:\d{2}$/.test(end_time) || start_time >= end_time) {
+    return { error: "start_time and end_time must be HH:MM with start before end" };
+  }
+
+  const normalized = {
+    id,
+    kind,
+    start_time,
+    end_time,
+    note: String(raw?.note || "").trim() || null,
+    createdAt: raw?.createdAt || new Date().toISOString(),
+  };
+
+  if (kind === "dated") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(raw?.specific_date || ""))) {
+      return { error: "specific_date is required for dated off-time windows" };
+    }
+    normalized.specific_date = raw.specific_date;
+    normalized.day_of_week = (new Date(`${raw.specific_date}T00:00:00`).getDay() + 6) % 7;
+  } else {
+    const day = Number(raw?.day_of_week);
+    if (!Number.isInteger(day) || day < 0 || day > 6) {
+      return { error: "day_of_week must be 0-6 for weekly off-time windows" };
+    }
+    normalized.day_of_week = day;
+    normalized.specific_date = null;
+  }
+
+  return { window: normalized };
+}
+
+function lessonsAffectedByOffTime(lessons, window) {
+  return lessons.filter((lesson) => {
+    if (lesson.active === false) return false;
+    if (lesson.day_of_week !== window.day_of_week) return false;
+    if (window.kind === "dated" && lesson.specific_date && lesson.specific_date !== window.specific_date) return false;
+    return timesOverlap(lesson.start_time, lesson.end_time, window.start_time, window.end_time);
+  });
+}
+
+function parseMinutes(value) {
+  const [h, m] = String(value || "").split(":").map(Number);
+  if ([h, m].some((part) => Number.isNaN(part))) return null;
+  return h * 60 + m;
+}
+
+function formatMinutes(total) {
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function lessonDurationMinutes(lesson) {
+  const start = parseMinutes(lesson.start_time);
+  const end = parseMinutes(lesson.end_time);
+  if (start === null || end === null || end <= start) return 60;
+  return end - start;
+}
+
+function findNextAvailableSlot(lessons, lesson, window) {
+  const duration = lessonDurationMinutes(lesson);
+  const dayLessons = lessons.filter((candidate) =>
+    candidate.active !== false &&
+    candidate.id !== lesson.id &&
+    candidate.day_of_week === lesson.day_of_week
+  );
+  const earliest = Math.max(parseMinutes(window.end_time) || 9 * 60, 9 * 60);
+  const latestEnd = 20 * 60;
+
+  for (let start = earliest; start + duration <= latestEnd; start += 30) {
+    const end = start + duration;
+    const startTime = formatMinutes(start);
+    const endTime = formatMinutes(end);
+    const conflictsLesson = dayLessons.some((candidate) =>
+      timesOverlap(candidate.start_time, candidate.end_time, startTime, endTime)
+    );
+    const conflictsOffTime = timesOverlap(window.start_time, window.end_time, startTime, endTime);
+    if (!conflictsLesson && !conflictsOffTime) {
+      return { start_time: startTime, end_time: endTime };
+    }
+  }
+
+  return null;
+}
+
+function proposalAlreadyExists(pendingChanges, lesson, window) {
+  return pendingChanges.some((change) =>
+    change?.status === "pending" &&
+    change?.source === "off-time-renegotiation" &&
+    change?.offTimeWindowId === window.id &&
+    change?.action?.lesson_id === lesson.id
+  );
+}
+
+async function createOffTimeRescheduleProposals({ store, lessons, window, pendingChanges, actorEmail }) {
+  const affectedLessons = lessonsAffectedByOffTime(lessons, window);
+  const nextPendingChanges = pendingChanges.slice();
+  const proposals = [];
+
+  for (const lesson of affectedLessons) {
+    if (proposalAlreadyExists(nextPendingChanges, lesson, window)) continue;
+
+    const slot = findNextAvailableSlot(lessons, lesson, window);
+    if (!slot) {
+      proposals.push({
+        lessonId: lesson.id,
+        skipped: true,
+        reason: "no_available_slot",
+        email: { sent: false, reason: "no proposal generated" },
+      });
+      continue;
+    }
+
+    const proposedAction = {
+      action: "reschedule",
+      student: lesson.student || null,
+      subject: lesson.subject || null,
+      day_of_week: lesson.day_of_week,
+      start_time: slot.start_time,
+      end_time: slot.end_time,
+      old_start_time: lesson.start_time,
+      old_end_time: lesson.end_time,
+      recurring: lesson.recurring !== false,
+      specific_date: lesson.specific_date || null,
+      lesson_id: lesson.id,
+      reason: `Maintainer unavailable: ${window.note || "off-time window"}`,
+      reply: `Proposed moving ${lesson.subject || "lesson"} with ${lesson.student || "student"} to ${slot.start_time}-${slot.end_time}.`,
+    };
+
+    const pendingChange = {
+      id: nextId(nextPendingChanges),
+      status: "pending",
+      source: "off-time-renegotiation",
+      offTimeWindowId: window.id,
+      createdAt: new Date().toISOString(),
+      requestedBy: lesson.requestedBy || "maintainer-offtime",
+      requestedByEmail: lesson.requestedByEmail || null,
+      requestMessage: `Maintainer off-time ${formatOffTimeLabel(window)} affects lesson #${lesson.id}.`,
+      autoCheck: {
+        requiredReason: proposedAction.reason,
+      },
+      action: proposedAction,
+    };
+    nextPendingChanges.push(pendingChange);
+
+    let email = { sent: false, reason: "missing recipient" };
+    if (lesson.requestedByEmail && typeof sendOffTimeProposalEmail === "function") {
+      email = await sendOffTimeProposalEmail({
+        to: lesson.requestedByEmail,
+        lesson,
+        window,
+        proposedAction,
+        pendingChange,
+        actorEmail,
+      });
+    }
+
+    proposals.push({
+      lessonId: lesson.id,
+      pendingChange,
+      email,
+    });
+  }
+
+  await writePendingChanges(store, nextPendingChanges);
+  return { pendingChanges: nextPendingChanges, proposals };
+}
+
+function formatOffTimeLabel(window) {
+  const time = `${window.start_time}-${window.end_time}`;
+  if (window.kind === "dated") return `${window.specific_date} ${time}`;
+  return `${DAY_NAMES[window.day_of_week] || "Unknown"} ${time}`;
 }
 
 function withStatusMeta(change, status, actor, note) {
@@ -134,6 +313,8 @@ async function applyPendingChange(change, lessons, exceptions, actor) {
       recurring: action.recurring !== false,
       specific_date: action.specific_date || null,
       active: true,
+      requestedBy: change.requestedBy || null,
+      requestedByEmail: change.requestedByEmail || null,
     };
     lessons.push(lesson);
     return {
@@ -295,13 +476,14 @@ exports.handler = async (event) => {
     const store = getLessonStore(event);
 
     if (event.httpMethod === "GET") {
-      const [lessons, exceptions, approvalSettings, usageSettings, pendingChanges, userIdentityMap] = await Promise.all([
+      const [lessons, exceptions, approvalSettings, usageSettings, pendingChanges, userIdentityMap, offTimeWindows] = await Promise.all([
         readLessons(store),
         readExceptions(store),
         readApprovalSettings(store),
         getUsageSettings(store),
         readPendingChanges(store),
         readUserIdentityMap(store),
+        readOffTimeWindows(store),
       ]);
       const visiblePendingChanges = filterVisiblePendingChanges(pendingChanges);
       const pendingChangesWithEmails = visiblePendingChanges.map((change) => ({
@@ -317,6 +499,10 @@ exports.handler = async (event) => {
         userIdentities: formatUserIdentities(userIdentityMap),
         pendingChanges: pendingChangesWithEmails.filter((item) => item.status === "pending"),
         allPendingChanges: pendingChangesWithEmails,
+        offTimeWindows: offTimeWindows.map((window) => ({
+          ...window,
+          affectedLessons: lessonsAffectedByOffTime(lessons, window),
+        })),
       });
     }
 
@@ -394,6 +580,47 @@ exports.handler = async (event) => {
         }
 
         return jsonResponse(200, { userIdentity: { userId, ...result }, saved: true });
+      }
+
+      if (operation === "save_offtime_window") {
+        const [lessons, offTimeWindows, pendingChanges] = await Promise.all([
+          readLessons(store),
+          readOffTimeWindows(store),
+          readPendingChanges(store),
+        ]);
+        const id = body.window?.id || nextId(offTimeWindows);
+        const normalized = normalizeOffTimeWindow(body.window || {}, id);
+        if (normalized.error) return jsonResponse(400, { error: normalized.error });
+
+        const nextWindows = offTimeWindows.filter((window) => window.id !== id);
+        nextWindows.push(normalized.window);
+        nextWindows.sort((a, b) => {
+          if (a.day_of_week !== b.day_of_week) return a.day_of_week - b.day_of_week;
+          return a.start_time.localeCompare(b.start_time);
+        });
+        await writeOffTimeWindows(store, nextWindows);
+        const proposalResult = await createOffTimeRescheduleProposals({
+          store,
+          lessons,
+          window: normalized.window,
+          pendingChanges,
+          actorEmail: adminAuth.user.email,
+        });
+        return jsonResponse(200, {
+          offTimeWindow: normalized.window,
+          affectedLessons: lessonsAffectedByOffTime(lessons, normalized.window),
+          proposedReschedules: proposalResult.proposals,
+          saved: true,
+        });
+      }
+
+      if (operation === "delete_offtime_window") {
+        const id = Number(body.id);
+        if (!Number.isFinite(id)) return jsonResponse(400, { error: "id is required for delete_offtime_window" });
+        const offTimeWindows = await readOffTimeWindows(store);
+        const nextWindows = offTimeWindows.filter((window) => window.id !== id);
+        await writeOffTimeWindows(store, nextWindows);
+        return jsonResponse(200, { deleted: id, offTimeWindows: nextWindows });
       }
 
       if (operation === "approve_change") {

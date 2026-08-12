@@ -193,6 +193,56 @@
   }
   .assistant-usage.low { color: var(--danger); }
   .assistant-usage.ok { color: var(--success); }
+  .reminder-settings {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: minmax(180px, 240px) 1fr auto;
+    gap: 10px;
+    align-items: end;
+  }
+  .reminder-settings label {
+    display: block;
+    font-size: 0.76rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .reminder-settings select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 9px;
+    background: #fff;
+  }
+  .reminder-offsets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    font-size: 0.8rem;
+    color: var(--text);
+  }
+  .reminder-offsets label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+    color: var(--text);
+  }
+  .reminder-settings button {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  .reminder-settings button:hover { background: var(--surface); }
+  .reminder-status {
+    grid-column: 1 / -1;
+    min-height: 1em;
+    font-size: 0.76rem;
+    color: var(--muted);
+  }
 
   .request-section {
     margin-top: 12px;
@@ -249,6 +299,14 @@
     margin-bottom: 7px;
     font-size: 0.82rem;
   }
+  .lesson-card.one-off {
+    background: #eaf8f1;
+    border-left-color: var(--success);
+  }
+  .lesson-card.recurring {
+    background: var(--accent-light);
+    border-left-color: var(--accent);
+  }
   .lesson-card .time { font-weight: 600; }
   .lesson-card .student { display: block; }
   .lesson-card .subject { color: var(--muted); font-size: 0.78rem; }
@@ -279,6 +337,7 @@
     .auth-box button {
       width: 100%;
     }
+    .reminder-settings { grid-template-columns: 1fr; }
     .calendar { grid-template-columns: 1fr; }
     .bubble { max-width: 94%; }
   }
@@ -319,6 +378,26 @@
         <button class="send-btn" type="submit" id="assistant-submit">Send</button>
       </form>
       <div class="assistant-usage" id="assistant-usage"></div>
+      <form class="reminder-settings" id="reminder-settings-form">
+        <div>
+          <label for="reminder-delivery">Reminders</label>
+          <select id="reminder-delivery">
+            <option value="none">None</option>
+            <option value="email_calendar">Calendar invite by email</option>
+          </select>
+        </div>
+        <div>
+          <label>Calendar alert timing</label>
+          <div class="reminder-offsets">
+            <label><input type="checkbox" name="reminder-offset" value="0" /> At start</label>
+            <label><input type="checkbox" name="reminder-offset" value="15" /> 15 min</label>
+            <label><input type="checkbox" name="reminder-offset" value="60" /> 1 hour</label>
+            <label><input type="checkbox" name="reminder-offset" value="1440" /> 1 day</label>
+          </div>
+        </div>
+        <button type="submit" id="save-reminders-btn">Save</button>
+        <div class="reminder-status" id="reminder-status"></div>
+      </form>
       <section class="request-section" id="request-section">
         <h3>Recent requests</h3>
         <table class="requests-table">
@@ -348,6 +427,7 @@ const state = {
   user: null,
   calendarRefreshId: null,
   assistantHistory: [],
+  reminderSettings: null,
 };
 
 function formatTime(hhmm) {
@@ -431,6 +511,7 @@ function setSessionView(showSignedIn, user) {
         if (document.visibilityState === "visible") refresh();
       }, 15000);
     }
+    fetchReminderSettings();
   } else {
     if (state.calendarRefreshId) {
       clearInterval(state.calendarRefreshId);
@@ -445,6 +526,8 @@ function setSessionView(showSignedIn, user) {
     conversation.innerHTML = "";
     conversation.removeAttribute("data-ready");
     state.assistantHistory = [];
+    state.reminderSettings = null;
+    document.getElementById("reminder-status").textContent = "";
     document.getElementById("request-section").classList.add("hidden");
     const requestsTbody = document.getElementById("requests-tbody");
     const requestsEmpty = document.getElementById("requests-empty");
@@ -483,7 +566,7 @@ function renderCalendar(data) {
     } else {
       lessons.forEach((l) => {
         const card = document.createElement("div");
-        card.className = "lesson-card";
+        card.className = `lesson-card ${l.recurring === false ? "one-off" : "recurring"}`;
         card.innerHTML = `
           <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
           <span class="student">${escapeHtml(l.student)}</span>
@@ -494,6 +577,42 @@ function renderCalendar(data) {
     }
     cal.appendChild(col);
   });
+}
+
+function renderReminderSettings(settings) {
+  const normalized = settings || { delivery: "email_calendar", offsetsMinutes: [60] };
+  state.reminderSettings = normalized;
+  document.getElementById("reminder-delivery").value = normalized.delivery || "email_calendar";
+  const selected = new Set((normalized.offsetsMinutes || [60]).map((value) => String(value)));
+  document.querySelectorAll('input[name="reminder-offset"]').forEach((input) => {
+    input.checked = selected.has(input.value);
+  });
+}
+
+function collectReminderSettings() {
+  const offsetsMinutes = Array.from(document.querySelectorAll('input[name="reminder-offset"]:checked'))
+    .map((input) => Number(input.value))
+    .filter((value) => Number.isFinite(value));
+  return {
+    delivery: document.getElementById("reminder-delivery").value,
+    offsetsMinutes,
+  };
+}
+
+async function fetchReminderSettings() {
+  if (!state.user) return;
+  const status = document.getElementById("reminder-status");
+  try {
+    const res = await fetch("/api/reminder-settings", { credentials: "include" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Could not load reminder settings.");
+    renderReminderSettings(data.settings);
+    status.textContent = "";
+    status.style.color = "var(--muted)";
+  } catch (err) {
+    status.textContent = err.message || "Could not load reminder settings.";
+    status.style.color = "var(--danger)";
+  }
 }
 
 async function refresh() {
@@ -680,6 +799,34 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
     });
   } finally {
     setSessionView(false);
+  }
+});
+
+document.getElementById("reminder-settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!state.user) return;
+  const btn = document.getElementById("save-reminders-btn");
+  const status = document.getElementById("reminder-status");
+  btn.disabled = true;
+  status.textContent = "Saving...";
+  status.style.color = "var(--muted)";
+  try {
+    const res = await fetch("/api/reminder-settings", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: collectReminderSettings() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || "Could not save reminder settings.");
+    renderReminderSettings(data.settings);
+    status.textContent = "Reminder settings saved.";
+    status.style.color = "var(--success)";
+  } catch (err) {
+    status.textContent = err.message || "Could not save reminder settings.";
+    status.style.color = "var(--danger)";
+  } finally {
+    btn.disabled = false;
   }
 });
 

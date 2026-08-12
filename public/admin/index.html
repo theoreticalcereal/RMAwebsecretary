@@ -140,6 +140,25 @@
   }
   .usage-table th { background: #edf1f6; color: var(--muted); font-weight: 650; }
   .usage-table tr:last-child td { border-bottom: none; }
+  .offtime-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+    font-size: 0.85rem;
+  }
+  .offtime-table th,
+  .offtime-table td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .offtime-table th { background: #edf1f6; color: var(--muted); font-weight: 650; }
+  .offtime-table tr:last-child td { border-bottom: none; }
 
   .pending-table {
     width: 100%;
@@ -523,6 +542,55 @@
       </form>
       <button id="save-approval-settings" type="button">Save settings</button>
     </div>
+
+    <h2 class="section-heading">Maintainer off-time</h2>
+    <div class="settings-form">
+      <form id="offtime-form" class="row">
+        <div>
+          <label for="offtime-kind">Type</label>
+          <select id="offtime-kind">
+            <option value="weekly">Weekly</option>
+            <option value="dated">Specific date</option>
+          </select>
+        </div>
+        <div>
+          <label for="offtime-day">Day</label>
+          <select id="offtime-day">
+            <option value="0">Monday</option>
+            <option value="1">Tuesday</option>
+            <option value="2">Wednesday</option>
+            <option value="3">Thursday</option>
+            <option value="4">Friday</option>
+            <option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+        </div>
+        <div>
+          <label for="offtime-date">Date</label>
+          <input id="offtime-date" type="date" />
+        </div>
+        <div>
+          <label for="offtime-start">Start</label>
+          <input id="offtime-start" type="time" required />
+        </div>
+        <div>
+          <label for="offtime-end">End</label>
+          <input id="offtime-end" type="time" required />
+        </div>
+        <div>
+          <label for="offtime-note">Note</label>
+          <input id="offtime-note" type="text" placeholder="optional" />
+        </div>
+      </form>
+      <button id="save-offtime-window" type="button">Add off-time</button>
+    </div>
+    <table class="offtime-table">
+      <thead>
+        <tr><th>Window</th><th>Note</th><th>Affected lessons</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="offtime-tbody"></tbody>
+    </table>
+    <div class="empty" id="offtime-empty">No off-time windows.</div>
 
     <h2 class="section-heading">
       <span>Pending assistant changes</span>
@@ -936,6 +1004,52 @@ function renderPendingRows(pendingChanges) {
   });
 }
 
+function formatOffTimeWindow(window) {
+  if (!window) return "";
+  const time = `${formatTime(window.start_time)}-${formatTime(window.end_time)}`;
+  if (window.kind === "dated") return `${window.specific_date} ${time}`;
+  return `${DAY_NAMES[window.day_of_week] || "Unknown"} ${time}`;
+}
+
+function renderOffTimeRows(windows) {
+  const tbody = document.getElementById("offtime-tbody");
+  const empty = document.getElementById("offtime-empty");
+  tbody.innerHTML = "";
+
+  if (!windows || windows.length === 0) {
+    empty.style.display = "block";
+    return;
+  }
+
+  empty.style.display = "none";
+  windows.forEach((window) => {
+    const affected = Array.isArray(window.affectedLessons) ? window.affectedLessons : [];
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${escapeHtml(formatOffTimeWindow(window))}</td>
+      <td>${escapeHtml(window.note || "—")}</td>
+      <td>${affected.length ? affected.map((lesson) => escapeHtml(`${lesson.student} ${lesson.subject || ""} ${lesson.start_time}-${lesson.end_time}`)).join("<br>") : "None"}</td>
+      <td><button type="button" class="danger" data-offtime-id="${window.id}">Delete</button></td>
+    `;
+    tbody.appendChild(row);
+  });
+
+  tbody.querySelectorAll("button[data-offtime-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await adminFetch("/api/admin-lessons", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operation: "delete_offtime_window", id: Number(btn.dataset.offtimeId) }),
+        });
+        refreshAll();
+      } catch (err) {
+        showError(`Couldn't delete off-time window: ${err.message}`);
+      }
+    });
+  });
+}
+
 function renderIdentityRows(identities) {
   const tbody = document.getElementById("identity-tbody");
   const empty = document.getElementById("identity-empty");
@@ -1086,6 +1200,7 @@ async function refreshAll() {
       defaultLimitInput.value = Number(adminData?.usageSettings?.defaultDailyPromptLimit ?? 5);
     }
     renderIdentityRows(adminData.userIdentities || []);
+    renderOffTimeRows(adminData.offTimeWindows || []);
     renderPendingRows(adminData.pendingChanges || []);
     updatePendingToggleUI();
   } catch (err) {
@@ -1137,6 +1252,33 @@ document.getElementById("save-approval-settings").addEventListener("click", asyn
     refreshAll();
   } catch (err) {
     showError(`Couldn't save approval settings: ${err.message}`);
+  }
+});
+
+document.getElementById("save-offtime-window").addEventListener("click", async () => {
+  const kind = document.getElementById("offtime-kind").value;
+  const window = {
+    kind,
+    day_of_week: Number(document.getElementById("offtime-day").value),
+    specific_date: document.getElementById("offtime-date").value || null,
+    start_time: document.getElementById("offtime-start").value,
+    end_time: document.getElementById("offtime-end").value,
+    note: document.getElementById("offtime-note").value,
+  };
+  if (kind === "dated" && !window.specific_date) {
+    showError("Date is required for specific-date off-time.");
+    return;
+  }
+  try {
+    await adminFetch("/api/admin-lessons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "save_offtime_window", window }),
+    });
+    document.getElementById("offtime-form").reset();
+    refreshAll();
+  } catch (err) {
+    showError(`Couldn't save off-time window: ${err.message}`);
   }
 });
 

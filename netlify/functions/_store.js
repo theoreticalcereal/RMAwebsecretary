@@ -37,6 +37,8 @@ const APPROVAL_SETTINGS_KEY = "approval_settings";
 const PENDING_CHANGES_KEY = "pending_changes";
 const USER_IDENTITY_MAP_KEY = "user_identity_map";
 const NIM_REQUEST_TRACKING_KEY = "nim_request_timestamps";
+const REMINDER_SETTINGS_PREFIX = "reminder_settings:";
+const OFF_TIME_WINDOWS_KEY = "off_time_windows";
 
 const DEFAULT_DAILY_PROMPT_LIMIT = 5;
 const NIM_RATE_WINDOW_MS = 60 * 1000;
@@ -204,6 +206,56 @@ async function canConsumeNimRequestSlot(store, nowMs = Date.now()) {
   inWindow.push(nowMs);
   await store.setJSON(NIM_REQUEST_TRACKING_KEY, inWindow.sort((a, b) => a - b));
   return { allowed: true, inWindowCount: inWindow.length, retryAfterMs: 0 };
+}
+
+const REMINDER_DELIVERIES = new Set(["none", "email", "calendar", "email_calendar"]);
+const REMINDER_OFFSETS = new Set([0, 15, 60, 1440]);
+const DEFAULT_REMINDER_SETTINGS = Object.freeze({
+  delivery: "email_calendar",
+  offsetsMinutes: [60],
+});
+
+function normalizeReminderSettings(settings) {
+  const delivery = REMINDER_DELIVERIES.has(settings?.delivery)
+    ? settings.delivery
+    : DEFAULT_REMINDER_SETTINGS.delivery;
+  const offsets = Array.isArray(settings?.offsetsMinutes)
+    ? settings.offsetsMinutes
+        .map((value) => Math.floor(Number(value)))
+        .filter((value) => REMINDER_OFFSETS.has(value))
+    : DEFAULT_REMINDER_SETTINGS.offsetsMinutes;
+  const offsetsMinutes = Array.from(new Set(offsets)).sort((a, b) => a - b);
+
+  return {
+    delivery,
+    offsetsMinutes: offsetsMinutes.length ? offsetsMinutes : [...DEFAULT_REMINDER_SETTINGS.offsetsMinutes],
+  };
+}
+
+async function readReminderSettings(store, userId) {
+  const normalizedUserId = String(userId || "").trim();
+  const data = normalizedUserId
+    ? await store.get(`${REMINDER_SETTINGS_PREFIX}${normalizedUserId}`, { type: "json" })
+    : null;
+  return normalizeReminderSettings(data || DEFAULT_REMINDER_SETTINGS);
+}
+
+async function writeReminderSettings(store, userId, settings) {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) return null;
+
+  const normalized = normalizeReminderSettings(settings);
+  await store.setJSON(`${REMINDER_SETTINGS_PREFIX}${normalizedUserId}`, normalized);
+  return normalized;
+}
+
+async function readOffTimeWindows(store) {
+  const data = await store.get(OFF_TIME_WINDOWS_KEY, { type: "json" });
+  return Array.isArray(data) ? data : [];
+}
+
+async function writeOffTimeWindows(store, windows) {
+  await store.setJSON(OFF_TIME_WINDOWS_KEY, Array.isArray(windows) ? windows : []);
 }
 
 function isValidEmail(email) {
@@ -393,6 +445,11 @@ module.exports = {
   resetUserUsage,
   resetAllUsage,
   canConsumeNimRequestSlot,
+  normalizeReminderSettings,
+  readReminderSettings,
+  writeReminderSettings,
+  readOffTimeWindows,
+  writeOffTimeWindows,
   readApprovalSettings,
   writeApprovalSettings,
   readPendingChanges,

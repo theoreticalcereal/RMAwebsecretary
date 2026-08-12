@@ -58,6 +58,7 @@ function createStoreMock(initialLessons, options = {}) {
     lessons: initialLessons.map((lesson) => ({ ...lesson })),
     usage: { count: 0, maintainerNotified: false },
     pendingChanges: (options.pendingChanges || []).map((change) => JSON.parse(JSON.stringify(change))),
+    reminderSettings: options.reminderSettings || { delivery: "none", offsetsMinutes: [60] },
   };
 
   return {
@@ -108,6 +109,13 @@ function createStoreMock(initialLessons, options = {}) {
       },
       async canConsumeNimRequestSlot() {
         return { allowed: true, retryAfterMs: 0 };
+      },
+      async readReminderSettings() {
+        return state.reminderSettings;
+      },
+      async writeReminderSettings(_store, _userId, settings) {
+        state.reminderSettings = settings;
+        return settings;
       },
       NIM_RATE_LIMIT_PER_WINDOW: 40,
       NIM_RATE_WINDOW_MS: 60000,
@@ -287,6 +295,167 @@ test("lets AI interpret complete scheduling requests before quick parsers", asyn
     assert.equal(body.lesson.student, "Avery");
     assert.equal(body.lesson.subject, "Geometry");
     assert.equal(body.action.reason, "Avery needs an extra weekly class before exams");
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("sends a calendar invite when an auto-approved add uses calendar reminders", async () => {
+  const store = createStoreMock([], {
+    reminderSettings: { delivery: "calendar", offsetsMinutes: [60] },
+  });
+
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  let inviteCall = null;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                action: "add",
+                student: "Avery",
+                subject: "Geometry",
+                day_of_week: 1,
+                start_time: "16:00",
+                end_time: "17:00",
+                old_start_time: null,
+                old_end_time: null,
+                recurring: true,
+                specific_date: null,
+                lesson_id: null,
+                reason: "Avery needs an extra weekly class before exams",
+                reply: "I added Geometry with Avery on Tuesday from 4:00 to 5:00 PM.",
+              }),
+            },
+          },
+        ],
+      };
+    },
+  });
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "avery@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+        async sendLessonInviteEmail(payload) {
+          inviteCall = payload;
+          return { sent: true };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "add geometry with Avery from 4 to 5 pm on tuesday because Avery needs an extra weekly class before exams",
+      }),
+    });
+
+    assert.equal(response.statusCode, 201, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.applied, true);
+    assert.equal(body.invite.sent, true);
+    assert.equal(inviteCall.to, "avery@example.com");
+    assert.equal(inviteCall.lesson.student, "Avery");
+    assert.match(inviteCall.invite.content, /RRULE:FREQ=WEEKLY/);
+    assert.match(inviteCall.invite.content, /TRIGGER:-PT60M/);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) {
+      delete process.env.NVIDIA_NIM_API_KEY;
+    } else {
+      process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("does not send a calendar invite when reminders are disabled", async () => {
+  const store = createStoreMock([], {
+    reminderSettings: { delivery: "none", offsetsMinutes: [60] },
+  });
+
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  let inviteCalls = 0;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                action: "add",
+                student: "Avery",
+                subject: "Geometry",
+                day_of_week: 1,
+                start_time: "16:00",
+                end_time: "17:00",
+                old_start_time: null,
+                old_end_time: null,
+                recurring: true,
+                specific_date: null,
+                lesson_id: null,
+                reason: "Avery needs an extra weekly class before exams",
+                reply: "I added Geometry with Avery on Tuesday from 4:00 to 5:00 PM.",
+              }),
+            },
+          },
+        ],
+      };
+    },
+  });
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() {
+          return { id: "user-1", email: "avery@example.com" };
+        },
+      },
+      "./_notify": {
+        async notifyMaintainer() {
+          return { sent: false };
+        },
+        async sendLessonInviteEmail() {
+          inviteCalls += 1;
+          return { sent: true };
+        },
+      },
+    });
+
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "add geometry with Avery from 4 to 5 pm on tuesday because Avery needs an extra weekly class before exams",
+      }),
+    });
+
+    assert.equal(response.statusCode, 201, response.body);
+    const body = JSON.parse(response.body);
+    assert.equal(body.applied, true);
+    assert.equal(body.invite, undefined);
+    assert.equal(inviteCalls, 0);
   } finally {
     global.fetch = originalFetch;
     if (originalApiKey === undefined) {
@@ -757,15 +926,19 @@ test("lets AI attach a follow-up reason to a single pending request", async () =
 
     assert.match(nimPrompt, /PENDING REQUESTS:/);
     assert.match(nimPrompt, /id=14/);
-    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.statusCode, 201, response.body);
     const body = JSON.parse(response.body);
-    assert.equal(body.applied, false);
-    assert.equal(body.pending, true);
+    assert.equal(body.applied, true);
     assert.equal(body.pendingChange.id, 14);
+    assert.equal(body.pendingChange.status, "approved");
+    assert.equal(body.lesson.student, "Samuel");
+    assert.equal(body.lesson.subject, "Cello");
     assert.equal(
       body.pendingChange.action.reason,
       "I have a competition coming up so i need extra time to prepare"
     );
+    assert.equal(store.state.pendingChanges[0].status, "approved");
+    assert.equal(store.state.lessons.length, 1);
   } finally {
     global.fetch = originalFetch;
     if (originalApiKey === undefined) {
@@ -897,11 +1070,13 @@ test("lets AI use pending request context to add a follow-up reason", async () =
     assert.match(nimPrompt, /id=12/);
     assert.match(nimPrompt, /Cello/);
     assert.match(nimPrompt, /Samuel/);
-    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.statusCode, 201, response.body);
     const body = JSON.parse(response.body);
-    assert.equal(body.applied, false);
-    assert.equal(body.pending, true);
+    assert.equal(body.applied, true);
     assert.equal(body.pendingChange.id, 12);
+    assert.equal(body.pendingChange.status, "approved");
+    assert.equal(body.lesson.student, "Samuel");
+    assert.equal(body.lesson.subject, "Cello");
     assert.equal(
       body.pendingChange.autoCheck.requiredReason,
       "its the scheduled weekly class and hasn't been added to calendar yet"
@@ -910,7 +1085,9 @@ test("lets AI use pending request context to add a follow-up reason", async () =
       body.pendingChange.action.reason,
       "its the scheduled weekly class and hasn't been added to calendar yet"
     );
-    assert.equal(store.state.lessons.length, 0);
+    assert.equal(store.state.pendingChanges[0].status, "approved");
+    assert.equal(store.state.pendingChanges[1].status, "pending");
+    assert.equal(store.state.lessons.length, 1);
   } finally {
     global.fetch = originalFetch;
     if (originalApiKey === undefined) {

@@ -5,6 +5,7 @@ const {
   readExceptions,
   writeExceptions,
   readApprovalSettings,
+  readReminderSettings,
   readPendingChanges,
   writePendingChanges,
   filterPendingChangesForUser,
@@ -20,8 +21,9 @@ const {
   nextId,
   timesOverlap,
 } = require("./_store");
-const { notifyMaintainer } = require("./_notify");
+const { notifyMaintainer, sendLessonInviteEmail } = require("./_notify");
 const { getSession } = require("./_auth");
+const { buildLessonInvite } = require("./_ics");
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const NIM_MODEL = process.env.NVIDIA_NIM_MODEL || "meta/llama-3.1-8b-instruct";
@@ -378,6 +380,25 @@ function createPendingReasonResponse(pending) {
   };
 }
 
+function withAutomaticApprovalMeta(change) {
+  return {
+    ...change,
+    status: "approved",
+    reviewedAt: new Date().toISOString(),
+    reviewedBy: "auto-approval",
+    reviewNote: "approved automatically after follow-up reason",
+  };
+}
+
+async function markPendingChangeApproved(store, pendingChanges, pending) {
+  const reviewedPending = withAutomaticApprovalMeta(pending);
+  const nextPendingChanges = pendingChanges.map((change) =>
+    change.id === pending.id ? reviewedPending : change
+  );
+  await writePendingChanges(store, nextPendingChanges);
+  return reviewedPending;
+}
+
 function findLessonByContext(lessons, action) {
   if (!action) return null;
   if (action.lesson_id) return lessons.find((l) => l.id === action.lesson_id);
@@ -463,6 +484,8 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
       recurring: action.recurring !== false,
       specific_date: action.specific_date || null,
       active: true,
+      requestedBy: userId,
+      requestedByEmail: userEmail || null,
     };
     lessons.push(lesson);
     await writeLessons(store, lessons);
@@ -552,6 +575,34 @@ async function applyActionOrQueue(store, action, userMessage, userId, lessons, s
     action,
     applied: false,
   };
+}
+
+function wantsCalendarInvite(settings) {
+  return settings?.delivery === "calendar" || settings?.delivery === "email_calendar";
+}
+
+async function sendInviteForAppliedChange(store, result, action, lessons, userId, userEmail) {
+  if (!result?.applied || !userEmail || typeof sendLessonInviteEmail !== "function") return null;
+
+  const settings = await readReminderSettings(store, userId);
+  if (!wantsCalendarInvite(settings)) return null;
+
+  const lesson =
+    result.lesson ||
+    lessons.find((item) => item.id === action.lesson_id) ||
+    null;
+  if (!lesson) return null;
+
+  const method = action.action === "cancel" || action.action === "delete" ? "CANCEL" : "REQUEST";
+  const invite = buildLessonInvite({
+    lesson,
+    method,
+    sequence: 0,
+    organizerEmail: process.env.MAINTAINER_EMAIL || userEmail,
+    attendeeEmail: userEmail,
+    offsetsMinutes: settings.offsetsMinutes,
+  });
+  return sendLessonInviteEmail({ to: userEmail, lesson, invite });
 }
 
 function inferLessonMinutes(startTime, endTime) {
@@ -1004,13 +1055,52 @@ async function innerHandler(event, user) {
 
     const pendingReasonUpdate = findPendingReasonUpdate(pendingChanges, userId, userEmail, action, inferredReason);
     if (pendingReasonUpdate) {
+      const reason = normalizeReason(inferredReason || action.reason);
       const updatedPending = await attachReasonToPendingChange(
         store,
         pendingChanges,
         pendingReasonUpdate,
-        normalizeReason(inferredReason || action.reason),
+        reason,
         body.message
       );
+
+      const autoDecision = canAutoApprove(updatedPending.action, reason, approvalSettings, lessons);
+      if (autoDecision.ok) {
+        const result = await applyActionOrQueue(
+          store,
+          cloneAction(updatedPending.action),
+          updatedPending.requestMessage || body.message,
+          userId,
+          lessons,
+          approvalSettings,
+          reason,
+          userEmail
+        );
+
+        if (result.applied) {
+          const approvedPending = await markPendingChangeApproved(
+            store,
+            pendingChanges,
+            updatedPending
+          );
+          const invite = await sendInviteForAppliedChange(
+            store,
+            result,
+            updatedPending.action,
+            lessons,
+            userId,
+            userEmail
+          );
+          return jsonResponse(result.applied ? 201 : 200, {
+            ...result,
+            pendingChange: approvedPending,
+            ...(invite ? { invite } : {}),
+            limit: userLimit,
+            used: nextUsage.count,
+          });
+        }
+      }
+
       return jsonResponse(200, {
         ...createPendingReasonResponse(updatedPending),
         limit: userLimit,
@@ -1068,7 +1158,13 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 201 : 200, { ...result, limit: userLimit, used: nextUsage.count });
+      const invite = await sendInviteForAppliedChange(store, result, action, lessons, userId, userEmail);
+      return jsonResponse(result.applied ? 201 : 200, {
+        ...result,
+        ...(invite ? { invite } : {}),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
     }
 
     if (action.action === "delete") {
@@ -1091,7 +1187,13 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 200 : 200, { ...result, limit: userLimit, used: nextUsage.count });
+      const invite = await sendInviteForAppliedChange(store, result, action, lessons, userId, userEmail);
+      return jsonResponse(result.applied ? 200 : 200, {
+        ...result,
+        ...(invite ? { invite } : {}),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
     }
 
     if (action.action === "cancel") {
@@ -1114,7 +1216,13 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 201 : 200, { ...result, limit: userLimit, used: nextUsage.count });
+      const invite = await sendInviteForAppliedChange(store, result, action, lessons, userId, userEmail);
+      return jsonResponse(result.applied ? 201 : 200, {
+        ...result,
+        ...(invite ? { invite } : {}),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
     }
 
     if (action.action === "reschedule") {
@@ -1147,7 +1255,13 @@ async function innerHandler(event, user) {
         reason,
         userEmail
       );
-      return jsonResponse(result.applied ? 201 : 200, { ...result, limit: userLimit, used: nextUsage.count });
+      const invite = await sendInviteForAppliedChange(store, result, action, lessons, userId, userEmail);
+      return jsonResponse(result.applied ? 201 : 200, {
+        ...result,
+        ...(invite ? { invite } : {}),
+        limit: userLimit,
+        used: nextUsage.count,
+      });
     }
 
     return jsonResponse(200, { action, applied: false, limit: userLimit, used: nextUsage.count });
