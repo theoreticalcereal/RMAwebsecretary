@@ -39,6 +39,7 @@ const USER_IDENTITY_MAP_KEY = "user_identity_map";
 const NIM_REQUEST_TRACKING_KEY = "nim_request_timestamps";
 const REMINDER_SETTINGS_PREFIX = "reminder_settings:";
 const OFF_TIME_WINDOWS_KEY = "off_time_windows";
+const WORKING_HOURS_KEY = "working_hours";
 
 const DEFAULT_DAILY_PROMPT_LIMIT = 5;
 const NIM_RATE_WINDOW_MS = 60 * 1000;
@@ -258,6 +259,46 @@ async function writeOffTimeWindows(store, windows) {
   await store.setJSON(OFF_TIME_WINDOWS_KEY, Array.isArray(windows) ? windows : []);
 }
 
+function defaultWorkingHours() {
+  return Array.from({ length: 7 }, (_, day) => ({
+    day_of_week: day,
+    enabled: true,
+    start_time: "09:00",
+    end_time: "20:00",
+  }));
+}
+
+function normalizeWorkingHours(rawHours) {
+  const defaults = defaultWorkingHours();
+  const byDay = new Map(
+    (Array.isArray(rawHours) ? rawHours : []).map((entry) => [Number(entry?.day_of_week), entry])
+  );
+
+  return defaults.map((fallback) => {
+    const raw = byDay.get(fallback.day_of_week);
+    const start = String(raw?.start_time || fallback.start_time).trim();
+    const end = String(raw?.end_time || fallback.end_time).trim();
+    const validTimes = /^\d{2}:\d{2}$/.test(start) && /^\d{2}:\d{2}$/.test(end) && start < end;
+    return {
+      day_of_week: fallback.day_of_week,
+      enabled: raw?.enabled === false ? false : true,
+      start_time: validTimes ? start : fallback.start_time,
+      end_time: validTimes ? end : fallback.end_time,
+    };
+  });
+}
+
+async function readWorkingHours(store) {
+  const data = await store.get(WORKING_HOURS_KEY, { type: "json" });
+  return normalizeWorkingHours(data);
+}
+
+async function writeWorkingHours(store, hours) {
+  const normalized = normalizeWorkingHours(hours);
+  await store.setJSON(WORKING_HOURS_KEY, normalized);
+  return normalized;
+}
+
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
 }
@@ -450,6 +491,9 @@ module.exports = {
   writeReminderSettings,
   readOffTimeWindows,
   writeOffTimeWindows,
+  normalizeWorkingHours,
+  readWorkingHours,
+  writeWorkingHours,
   readApprovalSettings,
   writeApprovalSettings,
   readPendingChanges,

@@ -39,6 +39,15 @@ function jsonResponse(statusCode, body) {
 }
 
 function createAdminStoreMock() {
+  const defaultWorkingHours = () => [
+    { day_of_week: 0, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 1, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 2, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 3, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 4, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 5, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 6, enabled: true, start_time: "09:00", end_time: "20:00" },
+  ];
   const state = {
     lessons: [
       {
@@ -68,6 +77,7 @@ function createAdminStoreMock() {
     ],
     offTimeWindows: [],
     pendingChanges: [],
+    workingHours: null,
   };
 
   return {
@@ -128,6 +138,18 @@ function createAdminStoreMock() {
       async writeOffTimeWindows(_store, windows) {
         state.offTimeWindows = windows;
       },
+      async readWorkingHours() {
+        return state.workingHours || defaultWorkingHours();
+      },
+      async writeWorkingHours(_store, hours) {
+        const defaults = defaultWorkingHours();
+        const byDay = new Map((Array.isArray(hours) ? hours : []).map((entry) => [Number(entry.day_of_week), entry]));
+        state.workingHours = defaults.map((fallback) => ({
+          ...fallback,
+          ...(byDay.get(fallback.day_of_week) || {}),
+        }));
+        return state.workingHours;
+      },
       jsonResponse,
       nextId(items) {
         return items.length ? Math.max(...items.map((item) => item.id)) + 1 : 1;
@@ -175,10 +197,62 @@ test("admin can save off-time windows and see affected lessons", async () => {
   assert.equal(body.affectedLessons.length, 1);
   assert.equal(body.affectedLessons[0].student, "Ricky");
   assert.equal(store.state.offTimeWindows.length, 1);
+  assert.equal(store.state.pendingChanges.length, 0);
 });
 
-test("saving off-time automatically proposes reschedules and emails affected users", async () => {
+test("admin can save weekly working hours", async () => {
   const store = createAdminStoreMock();
+  const admin = loadAdminLessons({
+    "./_store": store.module,
+    "./_auth": {
+      async getAdminSession() {
+        return { ok: true, user: { email: "admin@example.com" } };
+      },
+    },
+    "./_notify": {
+      async sendOffTimeProposalEmail() {
+        return { sent: false, reason: "test noop" };
+      },
+    },
+  });
+
+  const response = await admin.handler({
+    httpMethod: "POST",
+    body: JSON.stringify({
+      operation: "save_working_hours",
+      workingHours: [
+        { day_of_week: 4, enabled: true, start_time: "10:00", end_time: "18:00" },
+        { day_of_week: 5, enabled: false, start_time: "09:00", end_time: "20:00" },
+      ],
+    }),
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  const body = JSON.parse(response.body);
+  assert.equal(body.workingHours.length, 7);
+  assert.deepEqual(body.workingHours[4], {
+    day_of_week: 4,
+    enabled: true,
+    start_time: "10:00",
+    end_time: "18:00",
+  });
+  assert.equal(body.workingHours[5].enabled, false);
+});
+
+test("auto-resolve off-time proposes reschedules inside working hours and emails users", async () => {
+  const store = createAdminStoreMock();
+  store.state.offTimeWindows = [
+    { id: 3, kind: "weekly", day_of_week: 4, start_time: "13:30", end_time: "15:30", note: "Studio closed" },
+  ];
+  store.state.workingHours = [
+    { day_of_week: 0, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 1, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 2, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 3, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 4, enabled: true, start_time: "10:00", end_time: "17:00" },
+    { day_of_week: 5, enabled: true, start_time: "09:00", end_time: "20:00" },
+    { day_of_week: 6, enabled: true, start_time: "09:00", end_time: "20:00" },
+  ];
   const emails = [];
   const admin = loadAdminLessons({
     "./_store": store.module,
@@ -198,14 +272,8 @@ test("saving off-time automatically proposes reschedules and emails affected use
   const response = await admin.handler({
     httpMethod: "POST",
     body: JSON.stringify({
-      operation: "save_offtime_window",
-      window: {
-        kind: "weekly",
-        day_of_week: 4,
-        start_time: "13:30",
-        end_time: "15:30",
-        note: "Studio closed",
-      },
+      operation: "auto_resolve_offtime",
+      id: 3,
     }),
   });
 

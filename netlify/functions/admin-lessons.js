@@ -15,6 +15,8 @@ const {
   writeApprovalSettings,
   readOffTimeWindows,
   writeOffTimeWindows,
+  readWorkingHours,
+  writeWorkingHours,
   readPendingChanges,
   writePendingChanges,
   filterVisiblePendingChanges,
@@ -135,15 +137,25 @@ function lessonDurationMinutes(lesson) {
   return end - start;
 }
 
-function findNextAvailableSlot(lessons, lesson, window) {
+function workingHoursForDay(workingHours, dayOfWeek) {
+  const found = (Array.isArray(workingHours) ? workingHours : []).find((entry) => entry.day_of_week === dayOfWeek);
+  if (!found || found.enabled === false) return null;
+  return found;
+}
+
+function findNextAvailableSlot(lessons, lesson, window, workingHours) {
   const duration = lessonDurationMinutes(lesson);
+  const hours = workingHoursForDay(workingHours, lesson.day_of_week);
+  if (!hours) return null;
+
   const dayLessons = lessons.filter((candidate) =>
     candidate.active !== false &&
     candidate.id !== lesson.id &&
     candidate.day_of_week === lesson.day_of_week
   );
-  const earliest = Math.max(parseMinutes(window.end_time) || 9 * 60, 9 * 60);
-  const latestEnd = 20 * 60;
+  const earliest = Math.max(parseMinutes(window.end_time) || parseMinutes(hours.start_time), parseMinutes(hours.start_time));
+  const latestEnd = parseMinutes(hours.end_time);
+  if (earliest === null || latestEnd === null) return null;
 
   for (let start = earliest; start + duration <= latestEnd; start += 30) {
     const end = start + duration;
@@ -170,7 +182,7 @@ function proposalAlreadyExists(pendingChanges, lesson, window) {
   );
 }
 
-async function createOffTimeRescheduleProposals({ store, lessons, window, pendingChanges, actorEmail }) {
+async function createOffTimeRescheduleProposals({ store, lessons, window, pendingChanges, workingHours, actorEmail }) {
   const affectedLessons = lessonsAffectedByOffTime(lessons, window);
   const nextPendingChanges = pendingChanges.slice();
   const proposals = [];
@@ -178,7 +190,7 @@ async function createOffTimeRescheduleProposals({ store, lessons, window, pendin
   for (const lesson of affectedLessons) {
     if (proposalAlreadyExists(nextPendingChanges, lesson, window)) continue;
 
-    const slot = findNextAvailableSlot(lessons, lesson, window);
+    const slot = findNextAvailableSlot(lessons, lesson, window, workingHours);
     if (!slot) {
       proposals.push({
         lessonId: lesson.id,
@@ -468,7 +480,7 @@ exports.handler = async (event) => {
     const store = getLessonStore(event);
 
     if (event.httpMethod === "GET") {
-      const [lessons, exceptions, approvalSettings, usageSettings, pendingChanges, userIdentityMap, offTimeWindows] = await Promise.all([
+      const [lessons, exceptions, approvalSettings, usageSettings, pendingChanges, userIdentityMap, offTimeWindows, workingHours] = await Promise.all([
         readLessons(store),
         readExceptions(store),
         readApprovalSettings(store),
@@ -476,6 +488,7 @@ exports.handler = async (event) => {
         readPendingChanges(store),
         readUserIdentityMap(store),
         readOffTimeWindows(store),
+        readWorkingHours(store),
       ]);
       const visiblePendingChanges = filterVisiblePendingChanges(pendingChanges);
       const pendingChangesWithEmails = visiblePendingChanges.map((change) => ({
@@ -495,6 +508,7 @@ exports.handler = async (event) => {
           ...window,
           affectedLessons: lessonsAffectedByOffTime(lessons, window),
         })),
+        workingHours,
       });
     }
 
@@ -575,10 +589,9 @@ exports.handler = async (event) => {
       }
 
       if (operation === "save_offtime_window") {
-        const [lessons, offTimeWindows, pendingChanges] = await Promise.all([
+        const [lessons, offTimeWindows] = await Promise.all([
           readLessons(store),
           readOffTimeWindows(store),
-          readPendingChanges(store),
         ]);
         const id = body.window?.id || nextId(offTimeWindows);
         const normalized = normalizeOffTimeWindow(body.window || {}, id);
@@ -591,16 +604,40 @@ exports.handler = async (event) => {
           return a.start_time.localeCompare(b.start_time);
         });
         await writeOffTimeWindows(store, nextWindows);
-        const proposalResult = await createOffTimeRescheduleProposals({
-          store,
-          lessons,
-          window: normalized.window,
-          pendingChanges,
-          actorEmail: adminAuth.user.email,
-        });
         return jsonResponse(200, {
           offTimeWindow: normalized.window,
           affectedLessons: lessonsAffectedByOffTime(lessons, normalized.window),
+          saved: true,
+        });
+      }
+
+      if (operation === "save_working_hours") {
+        const workingHours = await writeWorkingHours(store, body.workingHours || []);
+        return jsonResponse(200, { workingHours, saved: true });
+      }
+
+      if (operation === "auto_resolve_offtime") {
+        const id = Number(body.id);
+        if (!Number.isFinite(id)) return jsonResponse(400, { error: "id is required for auto_resolve_offtime" });
+        const [lessons, offTimeWindows, pendingChanges, workingHours] = await Promise.all([
+          readLessons(store),
+          readOffTimeWindows(store),
+          readPendingChanges(store),
+          readWorkingHours(store),
+        ]);
+        const window = offTimeWindows.find((item) => item.id === id);
+        if (!window) return jsonResponse(404, { error: "Off-time window not found" });
+        const proposalResult = await createOffTimeRescheduleProposals({
+          store,
+          lessons,
+          window,
+          pendingChanges,
+          workingHours,
+          actorEmail: adminAuth.user.email,
+        });
+        return jsonResponse(200, {
+          offTimeWindow: window,
+          affectedLessons: lessonsAffectedByOffTime(lessons, window),
           proposedReschedules: proposalResult.proposals,
           saved: true,
         });

@@ -545,6 +545,10 @@
 
     <h2 class="section-heading">Maintainer off-time</h2>
     <div class="settings-form">
+      <div id="working-hours-grid" class="row"></div>
+      <button id="save-working-hours" type="button">Save working hours</button>
+    </div>
+    <div class="settings-form">
       <form id="offtime-form" class="row">
         <div>
           <label for="offtime-day">Day</label>
@@ -1017,9 +1021,35 @@ function renderOffTimeRows(windows) {
       <td>${escapeHtml(formatOffTimeWindow(window))}</td>
       <td>${escapeHtml(window.note || "—")}</td>
       <td>${affected.length ? affected.map((lesson) => escapeHtml(`${lesson.student} ${lesson.subject || ""} ${lesson.start_time}-${lesson.end_time}`)).join("<br>") : "None"}</td>
-      <td><button type="button" class="danger" data-offtime-id="${window.id}">Delete</button></td>
+      <td>
+        <button type="button" data-auto-resolve-id="${window.id}">Auto-resolve</button>
+        <button type="button" class="danger" data-offtime-id="${window.id}">Delete</button>
+      </td>
     `;
     tbody.appendChild(row);
+  });
+
+  tbody.querySelectorAll("button[data-auto-resolve-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const result = await adminFetch("/api/admin-lessons", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operation: "auto_resolve_offtime", id: Number(btn.dataset.autoResolveId) }),
+        });
+        const created = Array.isArray(result.proposedReschedules)
+          ? result.proposedReschedules.filter((item) => !item.skipped).length
+          : 0;
+        const skipped = Array.isArray(result.proposedReschedules)
+          ? result.proposedReschedules.filter((item) => item.skipped).length
+          : 0;
+        clearError();
+        if (skipped) showError(`Auto-resolve created ${created} proposal(s); ${skipped} lesson(s) had no available slot.`);
+        refreshAll();
+      } catch (err) {
+        showError(`Couldn't auto-resolve off-time window: ${err.message}`);
+      }
+    });
   });
 
   tbody.querySelectorAll("button[data-offtime-id]").forEach((btn) => {
@@ -1036,6 +1066,39 @@ function renderOffTimeRows(windows) {
       }
     });
   });
+}
+
+function renderWorkingHours(hours) {
+  const grid = document.getElementById("working-hours-grid");
+  if (!grid) return;
+  const rows = Array.isArray(hours) ? hours : [];
+  grid.innerHTML = DAY_NAMES.map((name, idx) => {
+    const row = rows.find((entry) => entry.day_of_week === idx) || {
+      day_of_week: idx,
+      enabled: true,
+      start_time: "09:00",
+      end_time: "20:00",
+    };
+    return `
+      <div>
+        <label>
+          <input type="checkbox" class="working-enabled" data-day="${idx}" ${row.enabled === false ? "" : "checked"} />
+          ${name}
+        </label>
+        <input type="time" class="working-start" data-day="${idx}" value="${escapeHtml(row.start_time || "09:00")}" />
+        <input type="time" class="working-end" data-day="${idx}" value="${escapeHtml(row.end_time || "20:00")}" />
+      </div>
+    `;
+  }).join("");
+}
+
+function collectWorkingHours() {
+  return DAY_NAMES.map((_name, idx) => ({
+    day_of_week: idx,
+    enabled: document.querySelector(`.working-enabled[data-day="${idx}"]`)?.checked !== false,
+    start_time: document.querySelector(`.working-start[data-day="${idx}"]`)?.value || "09:00",
+    end_time: document.querySelector(`.working-end[data-day="${idx}"]`)?.value || "20:00",
+  }));
 }
 
 function renderIdentityRows(identities) {
@@ -1188,6 +1251,7 @@ async function refreshAll() {
       defaultLimitInput.value = Number(adminData?.usageSettings?.defaultDailyPromptLimit ?? 5);
     }
     renderIdentityRows(adminData.userIdentities || []);
+    renderWorkingHours(adminData.workingHours || []);
     renderOffTimeRows(adminData.offTimeWindows || []);
     renderPendingRows(adminData.pendingChanges || []);
     updatePendingToggleUI();
@@ -1261,6 +1325,19 @@ document.getElementById("save-offtime-window").addEventListener("click", async (
     refreshAll();
   } catch (err) {
     showError(`Couldn't save off-time window: ${err.message}`);
+  }
+});
+
+document.getElementById("save-working-hours").addEventListener("click", async () => {
+  try {
+    await adminFetch("/api/admin-lessons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "save_working_hours", workingHours: collectWorkingHours() }),
+    });
+    refreshAll();
+  } catch (err) {
+    showError(`Couldn't save working hours: ${err.message}`);
   }
 });
 
