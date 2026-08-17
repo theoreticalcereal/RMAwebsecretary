@@ -29,3 +29,10 @@ test("workspace descriptions stay concise", () => {
   assert.doesNotMatch(adminHtml, /Scheduling only—no practice or artistic coaching/);
   assert.match(adminHtml, /Import \.ics or refresh iCloud\./);
 });
+
+test("professional events can focus their month in the combined calendar", () => {
+  assert.match(adminHtml, /function focusCalendarMonth\(/);
+  assert.match(adminHtml, /data-show-event-id/);
+  assert.match(adminHtml, /focusCalendarMonth\(date\);/);
+  assert.match(adminHtml, /focusCalendarMonth\(data\.action\?\.specific_date \|\| data\.event\?\.start\);/);
+});

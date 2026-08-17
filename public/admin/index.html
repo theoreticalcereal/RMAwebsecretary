@@ -522,6 +522,8 @@
   .event-row strong { display: block; font-size: .88rem; }
   .event-row small { color: var(--muted); }
   .event-row button { border: 1px solid #e1b7b7; color: var(--danger); background: #fff; border-radius: 8px; padding: 6px 9px; cursor: pointer; }
+  .event-actions { display: flex; gap: 6px; }
+  .event-actions [data-show-event-id] { color: var(--accent); border-color: var(--border); }
   .lesson-card.event-card { background: #f6ece4; border-left-color: #b17548; }
   .lesson-card.event-card.rehearsal { background: #eaf2ef; border-left-color: #4d7568; }
   .lesson-card.event-card.unavailable { background: #eee9e2; border-left-color: #8f8780; }
@@ -825,6 +827,13 @@ const ASSISTANT_CONTEXT_LIMIT = 12;
 function currentMonthKey() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function focusCalendarMonth(value) {
+  const match = String(value || "").match(/^(\d{4}-\d{2})/);
+  if (!match) return false;
+  state.calendarMonth = match[1];
+  return true;
 }
 
 const state = {
@@ -1501,9 +1510,20 @@ function renderProfessionalEvents(events) {
       <div class="event-kind">${escapeHtml(event.eventType || "unavailable")}</div>
       <div><strong>${escapeHtml(event.title || "Unavailable")}</strong><small>${escapeHtml(event.location || "Private commitment")}</small></div>
       <div><strong>${escapeHtml(dateLabel)}</strong><small>${escapeHtml(timeLabel)} · ${escapeHtml(String(event.source || "manual").replace(/^file:/, "Imported: "))}</small></div>
-      <button type="button" data-list-event-id="${event.id}">Remove</button>
+      <div class="event-actions">
+        <button type="button" data-show-event-id="${event.id}">Show</button>
+        <button type="button" data-list-event-id="${event.id}">Remove</button>
+      </div>
     </div>`;
   }).join("");
+  list.querySelectorAll("[data-show-event-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const event = upcoming.find((item) => Number(item.id) === Number(button.dataset.showEventId));
+      if (!event || !focusCalendarMonth(event.start)) return;
+      await refreshAll();
+      document.querySelector(".calendar-heading")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
   list.querySelectorAll("[data-list-event-id]").forEach((button) => {
     button.addEventListener("click", () => deleteProfessionalEvent(Number(button.dataset.listEventId)));
   });
@@ -1612,7 +1632,10 @@ document.getElementById("admin-assistant-form").addEventListener("submit", async
     responseBubble.textContent = reply;
     state.assistantHistory.push({ role: "assistant", content: reply });
     state.assistantHistory = state.assistantHistory.slice(-ASSISTANT_CONTEXT_LIMIT);
-    if (data.applied || data.pending) await refreshAll();
+    if (data.applied || data.pending) {
+      focusCalendarMonth(data.action?.specific_date || data.event?.start);
+      await refreshAll();
+    }
   } catch (err) {
     responseBubble.textContent = err.message || "The scheduling assistant is unavailable.";
     responseBubble.parentElement.classList.add("error");
@@ -1681,6 +1704,7 @@ document.getElementById("event-form").addEventListener("submit", async (e) => {
       body: JSON.stringify({ operation: "save_event", event }),
     });
     e.target.reset();
+    focusCalendarMonth(date);
     await refreshAll();
   } catch (err) {
     showError(`Couldn't add event: ${err.message}`);
