@@ -193,6 +193,24 @@ test("admin weekly calendar places a multi-day commitment on every covered date"
   ]);
 });
 
+test("admin calendar returns professional occurrences for the selected month", async () => {
+  const store = createStoreMock();
+  const fn = loadFunction("../netlify/functions/calendar-events", {
+    "./_store": store.module,
+    "./_auth": { async getAdminSession() { return { ok: true, user: { email: "admin@example.com" } }; } },
+  });
+
+  const response = await fn.handler({
+    httpMethod: "GET",
+    queryStringParameters: { month: "2026-09" },
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(body.month, "2026-09");
+  assert.equal(body.occurrences.length, 1);
+  assert.equal(body.occurrences[0].date, "2026-09-03");
+});
+
 test("manual professional events cannot overlap a lesson occurrence", async () => {
   const store = createStoreMock();
   const fn = loadFunction("../netlify/functions/calendar-events", {

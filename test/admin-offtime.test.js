@@ -38,6 +38,10 @@ function jsonResponse(statusCode, body) {
   };
 }
 
+function timesOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && bStart < aEnd;
+}
+
 function createAdminStoreMock() {
   const defaultWorkingHours = () => [
     { day_of_week: 0, enabled: true, start_time: "09:00", end_time: "20:00" },
@@ -200,6 +204,27 @@ test("admin can save off-time windows and see affected lessons", async () => {
   assert.equal(store.state.pendingChanges.length, 0);
 });
 
+test("admin lesson calendar expands the selected month", async () => {
+  const store = createAdminStoreMock();
+  const admin = loadAdminLessons({
+    "./_store": store.module,
+    "./_auth": {
+      async getAdminSession() { return { ok: true, user: { email: "admin@example.com" } }; },
+    },
+    "./_notify": { async sendOffTimeProposalEmail() { return { sent: false }; } },
+  });
+
+  const response = await admin.handler({
+    httpMethod: "GET",
+    queryStringParameters: { month: "2026-09" },
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(body.month, "2026-09");
+  assert.equal(body.lessonOccurrences.length, 8);
+  assert.ok(body.lessonOccurrences.every((lesson) => lesson.occurrenceDate.startsWith("2026-09-")));
+});
+
 test("admin can save weekly working hours", async () => {
   const store = createAdminStoreMock();
   const admin = loadAdminLessons({
@@ -287,11 +312,117 @@ test("auto-resolve off-time proposes reschedules inside working hours and emails
   assert.equal(store.state.pendingChanges[0].requestedByEmail, "ricky@example.com");
   assert.equal(store.state.pendingChanges[0].action.action, "reschedule");
   assert.equal(store.state.pendingChanges[0].action.lesson_id, 1);
-  assert.equal(store.state.pendingChanges[0].action.start_time, "15:30");
-  assert.equal(store.state.pendingChanges[0].action.end_time, "16:30");
+  assert.ok(["12:30", "15:30"].includes(store.state.pendingChanges[0].action.start_time));
+  assert.ok(["13:30", "16:30"].includes(store.state.pendingChanges[0].action.end_time));
   assert.equal(emails.length, 1);
   assert.equal(emails[0].to, "ricky@example.com");
-  assert.equal(emails[0].proposedAction.start_time, "15:30");
+  assert.equal(emails[0].proposedAction.start_time, store.state.pendingChanges[0].action.start_time);
+});
+
+test("auto-resolve considers 15-minute candidate times", async () => {
+  const store = createAdminStoreMock();
+  store.state.lessons.push(
+    { id: 3, student: "Before", day_of_week: 4, start_time: "10:00", end_time: "13:30", recurring: true, active: true },
+    { id: 4, student: "Buffer", day_of_week: 4, start_time: "15:30", end_time: "15:45", recurring: true, active: true },
+  );
+  store.state.offTimeWindows = [
+    { id: 5, kind: "weekly", day_of_week: 4, start_time: "13:30", end_time: "15:30", note: "Studio closed" },
+  ];
+  store.state.workingHours = [
+    { day_of_week: 4, enabled: true, start_time: "10:00", end_time: "16:45" },
+  ];
+  const admin = loadAdminLessons({
+    "./_store": store.module,
+    "./_auth": { async getAdminSession() { return { ok: true, user: { email: "admin@example.com" } }; } },
+    "./_notify": { async sendOffTimeProposalEmail() { return { sent: false }; } },
+  });
+
+  const response = await admin.handler({
+    httpMethod: "POST",
+    body: JSON.stringify({ operation: "auto_resolve_offtime", id: 5 }),
+  });
+  const proposal = JSON.parse(response.body).proposedReschedules.find((item) => item.lessonId === 1);
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(proposal.pendingChange.action.start_time, "15:45");
+  assert.equal(proposal.pendingChange.action.end_time, "16:45");
+});
+
+test("auto-resolve shuffles affected lessons and reserves each proposed slot", async () => {
+  const store = createAdminStoreMock();
+  store.state.lessons.push({
+    id: 3,
+    student: "Noah",
+    subject: "Piano",
+    day_of_week: 4,
+    start_time: "13:45",
+    end_time: "14:30",
+    recurring: true,
+    active: true,
+  });
+  store.state.offTimeWindows = [
+    { id: 6, kind: "weekly", day_of_week: 4, start_time: "13:30", end_time: "15:30", note: "Studio closed" },
+  ];
+  store.state.workingHours = [
+    { day_of_week: 4, enabled: true, start_time: "10:00", end_time: "17:00" },
+  ];
+  const admin = loadAdminLessons({
+    "./_store": store.module,
+    "./_auth": { async getAdminSession() { return { ok: true, user: { email: "admin@example.com" } }; } },
+    "./_notify": { async sendOffTimeProposalEmail() { return { sent: false }; } },
+  });
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const response = await admin.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ operation: "auto_resolve_offtime", id: 6 }),
+    });
+    const proposals = JSON.parse(response.body).proposedReschedules.filter((item) => !item.skipped);
+    const first = proposals[0].pendingChange.action;
+    const second = proposals[1].pendingChange.action;
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(proposals[0].lessonId, 3);
+    assert.equal(proposals.length, 2);
+    assert.equal(timesOverlap(first.start_time, first.end_time, second.start_time, second.end_time), false);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test("off-time proposals remain approvable when lessons partly extend outside the window", async () => {
+  const store = createAdminStoreMock();
+  store.state.lessons = [
+    { id: 1, student: "Early", day_of_week: 4, start_time: "13:30", end_time: "14:30", recurring: true, active: true },
+    { id: 2, student: "Late", day_of_week: 4, start_time: "14:30", end_time: "15:30", recurring: true, active: true },
+  ];
+  store.state.offTimeWindows = [
+    { id: 7, kind: "weekly", day_of_week: 4, start_time: "14:00", end_time: "15:00", note: "Studio closed" },
+  ];
+  store.state.workingHours = [
+    { day_of_week: 4, enabled: true, start_time: "10:00", end_time: "18:00" },
+  ];
+  const admin = loadAdminLessons({
+    "./_store": store.module,
+    "./_auth": { async getAdminSession() { return { ok: true, user: { email: "admin@example.com" } }; } },
+    "./_notify": { async sendOffTimeProposalEmail() { return { sent: false }; } },
+  });
+
+  const proposalResponse = await admin.handler({
+    httpMethod: "POST",
+    body: JSON.stringify({ operation: "auto_resolve_offtime", id: 7 }),
+  });
+  const proposals = JSON.parse(proposalResponse.body).proposedReschedules.filter((item) => !item.skipped);
+  assert.equal(proposals.length, 2, proposalResponse.body);
+
+  for (const proposal of proposals) {
+    const approvalResponse = await admin.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ operation: "approve_change", id: proposal.pendingChange.id }),
+    });
+    assert.equal(approvalResponse.statusCode, 200, approvalResponse.body);
+  }
 });
 
 test("admin off-time rejects date-specific windows because schedule is weekly-only", async () => {

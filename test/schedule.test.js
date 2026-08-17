@@ -8,11 +8,22 @@ const {
   findLessonConflictForEvent,
   expandLessonOccurrences,
   findCalendarEventConflict,
+  studioMonth,
 } = require("../netlify/functions/_schedule");
 
 test("converts studio wall time to UTC across daylight-saving time", () => {
   assert.equal(zonedLocalToUtc("2026-09-03", "19:30", "America/Chicago"), "2026-09-04T00:30:00Z");
   assert.equal(zonedLocalToUtc("2026-12-03", "19:30", "America/Chicago"), "2026-12-04T01:30:00Z");
+});
+
+test("builds an exact studio-local month range", () => {
+  assert.deepEqual(studioMonth({ month: "2026-09", timezone: "America/Chicago" }), {
+    month: "2026-09",
+    rangeStart: "2026-09-01T05:00:00Z",
+    rangeEnd: "2026-10-01T05:00:00Z",
+    timezone: "America/Chicago",
+  });
+  assert.equal(studioMonth({ month: "September", timezone: "America/Chicago" }), null);
 });
 
 test("expands weekly imported commitments into a concrete date range", () => {

@@ -14,7 +14,7 @@ const {
   mergeCalendarEvents,
   buildScheduleCalendar,
 } = require("./_ics");
-const { studioTimezone, zonedLocalToUtc, findLessonConflictForEvent, findCalendarEventConflict, currentStudioWeek, expandCalendarEvents } = require("./_schedule");
+const { studioTimezone, zonedLocalToUtc, findLessonConflictForEvent, findCalendarEventConflict, currentStudioWeek, studioMonth, expandCalendarEvents } = require("./_schedule");
 
 const MAX_CALENDAR_BYTES = 2 * 1024 * 1024;
 const EVENT_TYPES = new Set(["concert", "rehearsal", "unavailable"]);
@@ -168,9 +168,17 @@ exports.handler = async (event) => {
           body: calendar.content,
         };
       }
-      const week = currentStudioWeek();
-      const occurrences = calendarDisplayOccurrences(events, week);
-      return jsonResponse(200, { events, occurrences, week });
+      const requestedMonth = event.queryStringParameters?.month;
+      const scheduleRange = requestedMonth ? studioMonth({ month: requestedMonth }) : currentStudioWeek();
+      if (!scheduleRange) return jsonResponse(400, { error: "month must be YYYY-MM" });
+      const occurrences = calendarDisplayOccurrences(events, scheduleRange);
+      return jsonResponse(200, {
+        events,
+        occurrences,
+        week: requestedMonth ? undefined : scheduleRange,
+        month: requestedMonth ? scheduleRange.month : undefined,
+        range: scheduleRange,
+      });
     }
 
     if (event.httpMethod === "POST") {

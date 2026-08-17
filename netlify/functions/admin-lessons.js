@@ -28,7 +28,7 @@ const {
 } = require("./_store");
 const { getAdminSession } = require("./_auth");
 const { sendOffTimeProposalEmail } = require("./_notify");
-const { currentStudioWeek, expandLessonOccurrences } = require("./_schedule");
+const { currentStudioWeek, studioMonth, expandLessonOccurrences } = require("./_schedule");
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SUPPORTED_MODES = new Set(["manual", "automatic"]);
@@ -154,11 +154,14 @@ function findNextAvailableSlot(lessons, lesson, window, workingHours) {
     candidate.id !== lesson.id &&
     candidate.day_of_week === lesson.day_of_week
   );
-  const earliest = Math.max(parseMinutes(window.end_time) || parseMinutes(hours.start_time), parseMinutes(hours.start_time));
+  const earliest = parseMinutes(hours.start_time);
   const latestEnd = parseMinutes(hours.end_time);
-  if (earliest === null || latestEnd === null) return null;
+  const windowStart = parseMinutes(window.start_time);
+  const windowEnd = parseMinutes(window.end_time);
+  if ([earliest, latestEnd, windowStart, windowEnd].some((value) => value === null)) return null;
 
-  for (let start = earliest; start + duration <= latestEnd; start += 30) {
+  const candidates = [];
+  for (let start = Math.ceil(earliest / 15) * 15; start + duration <= latestEnd; start += 15) {
     const end = start + duration;
     const startTime = formatMinutes(start);
     const endTime = formatMinutes(end);
@@ -167,11 +170,23 @@ function findNextAvailableSlot(lessons, lesson, window, workingHours) {
     );
     const conflictsOffTime = timesOverlap(window.start_time, window.end_time, startTime, endTime);
     if (!conflictsLesson && !conflictsOffTime) {
-      return { start_time: startTime, end_time: endTime };
+      const distance = end <= windowStart ? windowStart - end : start - windowEnd;
+      candidates.push({ start_time: startTime, end_time: endTime, distance, start });
     }
   }
 
-  return null;
+  candidates.sort((a, b) => a.distance - b.distance || a.start - b.start);
+  if (!candidates.length) return null;
+  return { start_time: candidates[0].start_time, end_time: candidates[0].end_time };
+}
+
+function shuffled(items) {
+  const result = items.slice();
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const swapIndex = Math.floor(Math.random() * (i + 1));
+    [result[i], result[swapIndex]] = [result[swapIndex], result[i]];
+  }
+  return result;
 }
 
 function proposalAlreadyExists(pendingChanges, lesson, window) {
@@ -187,11 +202,26 @@ async function createOffTimeRescheduleProposals({ store, lessons, window, pendin
   const affectedLessons = lessonsAffectedByOffTime(lessons, window);
   const nextPendingChanges = pendingChanges.slice();
   const proposals = [];
+  const reservedLessons = lessons.slice();
+  nextPendingChanges
+    .filter((change) => change?.status === "pending" && change?.source === "off-time-renegotiation")
+    .forEach((change) => {
+      const action = change.action || {};
+      if (action.day_of_week === window.day_of_week && action.start_time && action.end_time) {
+        reservedLessons.push({
+          id: `pending-${change.id}`,
+          day_of_week: action.day_of_week,
+          start_time: action.start_time,
+          end_time: action.end_time,
+          active: true,
+        });
+      }
+    });
 
-  for (const lesson of affectedLessons) {
+  for (const lesson of shuffled(affectedLessons)) {
     if (proposalAlreadyExists(nextPendingChanges, lesson, window)) continue;
 
-    const slot = findNextAvailableSlot(lessons, lesson, window, workingHours);
+    const slot = findNextAvailableSlot(reservedLessons, lesson, window, workingHours);
     if (!slot) {
       proposals.push({
         lessonId: lesson.id,
@@ -233,6 +263,13 @@ async function createOffTimeRescheduleProposals({ store, lessons, window, pendin
       action: proposedAction,
     };
     nextPendingChanges.push(pendingChange);
+    reservedLessons.push({
+      id: `proposal-${pendingChange.id}`,
+      day_of_week: lesson.day_of_week,
+      start_time: slot.start_time,
+      end_time: slot.end_time,
+      active: true,
+    });
 
     let email = { sent: false, reason: "missing recipient" };
     if (lesson.requestedByEmail && typeof sendOffTimeProposalEmail === "function") {
@@ -496,11 +533,15 @@ exports.handler = async (event) => {
         ...change,
         requestedByEmail: resolveRequesterEmail(userIdentityMap, change),
       }));
-      const week = currentStudioWeek();
+      const requestedMonth = event.queryStringParameters?.month;
+      const scheduleRange = requestedMonth ? studioMonth({ month: requestedMonth }) : currentStudioWeek();
+      if (!scheduleRange) return jsonResponse(400, { error: "month must be YYYY-MM" });
       return jsonResponse(200, {
         lessons,
-        lessonOccurrences: expandLessonOccurrences(lessons, exceptions, week),
-        week,
+        lessonOccurrences: expandLessonOccurrences(lessons, exceptions, scheduleRange),
+        week: requestedMonth ? undefined : scheduleRange,
+        month: requestedMonth ? scheduleRange.month : undefined,
+        range: scheduleRange,
         exceptions,
         dayNames: DAY_NAMES,
         approvalSettings,

@@ -264,6 +264,50 @@
     gap: 10px;
     margin-bottom: 24px;
   }
+  .calendar-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 26px;
+  }
+  .calendar-heading .section-heading { margin: 0; }
+  .month-controls { display: flex; align-items: center; gap: 7px; }
+  .month-controls button {
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 8px;
+    padding: 6px 9px;
+    cursor: pointer;
+  }
+  .month-controls strong { min-width: 140px; text-align: center; font-size: .88rem; }
+  .calendar-shell { overflow-x: auto; margin: 12px 0 24px; }
+  .calendar-weekdays,
+  .month-calendar {
+    min-width: 900px;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .calendar-weekdays { margin-bottom: 6px; }
+  .calendar-weekdays span {
+    color: var(--muted);
+    font-size: .7rem;
+    font-weight: 700;
+    text-align: center;
+    text-transform: uppercase;
+  }
+  .month-calendar { margin-bottom: 0; }
+  .month-day {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    min-height: 132px;
+    padding: 7px;
+  }
+  .month-day.outside { background: rgba(255, 253, 249, .4); }
+  .month-day-number { display: block; color: var(--muted); font-size: .72rem; margin-bottom: 6px; }
+  .month-day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .day-col {
     background: var(--card);
     border: 1px solid var(--border);
@@ -486,7 +530,7 @@
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
 
   @media (max-width: 800px) {
-    .calendar { grid-template-columns: repeat(2, 1fr); }
+    .calendar:not(.month-calendar) { grid-template-columns: repeat(2, 1fr); }
     .workspace-grid { grid-template-columns: 1fr; }
     .event-form { grid-template-columns: 1fr 1fr; }
   }
@@ -507,7 +551,8 @@
       align-items: flex-start;
       flex-direction: column;
     }
-    .calendar { grid-template-columns: 1fr; }
+    .calendar:not(.month-calendar) { grid-template-columns: 1fr; }
+    .calendar-heading { align-items: flex-start; flex-direction: column; }
     .header-inner { flex-direction: column; }
     .event-form { grid-template-columns: 1fr; }
     .event-row { grid-template-columns: 1fr; }
@@ -558,9 +603,8 @@
     <div class="workspace-grid">
       <section class="workspace-card" aria-labelledby="musician-assistant-title">
         <h2 id="musician-assistant-title">Scheduling assistant</h2>
-        <p>Create or move concerts, rehearsals, blocked time, and lessons using plain language. Scheduling only—no practice or artistic coaching.</p>
         <div class="admin-conversation" id="admin-conversation" aria-live="polite">
-          <div class="admin-message"><span>What would you like to schedule? Try “Add a rehearsal September 8 from 6–8 PM at the recital hall.”</span></div>
+          <div class="admin-message"><span>How can I help with your schedule?</span></div>
         </div>
         <form class="admin-assistant-form" id="admin-assistant-form">
           <input id="admin-assistant-input" type="text" placeholder="Ask about or change your schedule…" autocomplete="off" aria-label="Message the scheduling assistant" required />
@@ -570,7 +614,7 @@
 
       <section class="workspace-card" aria-labelledby="calendar-sync-title">
         <h2 id="calendar-sync-title">Apple Calendar</h2>
-        <p>Import an Apple Calendar export or refresh from an optional public iCloud calendar link. Imported details remain visible only here.</p>
+        <p>Import .ics or refresh iCloud.</p>
         <div class="calendar-tools">
           <div>
             <label for="ics-file">Import an .ics file</label>
@@ -605,8 +649,21 @@
     </div>
     <div class="event-list" id="professional-events"></div>
 
-    <h2 class="section-heading">Combined weekly calendar</h2>
-    <div class="calendar" id="calendar"></div>
+    <div class="calendar-heading">
+      <h2 class="section-heading">Combined calendar</h2>
+      <div class="month-controls" aria-label="Calendar month">
+        <button type="button" id="calendar-prev-month" aria-label="Previous month">←</button>
+        <button type="button" id="calendar-today">Today</button>
+        <strong id="calendar-month-label"></strong>
+        <button type="button" id="calendar-next-month" aria-label="Next month">→</button>
+      </div>
+    </div>
+    <div class="calendar-shell">
+      <div class="calendar-weekdays" aria-hidden="true">
+        <span>Monday</span><span>Tuesday</span><span>Wednesday</span><span>Thursday</span><span>Friday</span><span>Saturday</span><span>Sunday</span>
+      </div>
+      <div class="calendar month-calendar" id="calendar"></div>
+    </div>
 
     <h2 class="section-heading operations-divider">Studio operations</h2>
     <h2 class="section-heading">Today's assistant usage</h2>
@@ -763,6 +820,13 @@
 
 <script>
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const ASSISTANT_CONTEXT_LIMIT = 12;
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
 const state = {
   user: null,
   pendingAutoRefresh: null,
@@ -770,6 +834,7 @@ const state = {
   pendingCount: 0,
   calendarEvents: [],
   assistantHistory: [],
+  calendarMonth: currentMonthKey(),
 };
 
 function formatTime(hhmm) {
@@ -1324,36 +1389,50 @@ function renderIdentityRows(identities) {
 function renderCalendarData(data, calendarEvents = []) {
   const cal = document.getElementById("calendar");
   cal.innerHTML = "";
-
-  const byDay = {};
-  for (let i = 0; i < 7; i++) byDay[i] = [];
+  const byDate = {};
   (data.lessonOccurrences || data.lessons || [])
     .filter((l) => l.active !== false)
-    .forEach((lesson) => byDay[lesson.day_of_week].push({ kind: "lesson", startTime: lesson.start_time, lesson }));
+    .forEach((lesson) => {
+      const date = lesson.occurrenceDate || lesson.specific_date;
+      if (!date) return;
+      if (!byDate[date]) byDate[date] = [];
+      byDate[date].push({ kind: "lesson", startTime: lesson.start_time, lesson });
+    });
   calendarEvents.forEach((event) => {
     const dateText = event.date || String(event.start || "").slice(0, 10);
-    const date = new Date(`${dateText}T12:00:00`);
-    if (Number.isNaN(date.getTime())) return;
-    const dayIndex = (date.getDay() + 6) % 7;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return;
     const startMatch = String(event.start || "").match(/T(\d{2}:\d{2})/);
-    byDay[dayIndex].push({ kind: "event", startTime: event.startTime || startMatch?.[1] || "00:00", event });
+    if (!byDate[dateText]) byDate[dateText] = [];
+    byDate[dateText].push({ kind: "event", startTime: event.startTime || startMatch?.[1] || "00:00", event });
   });
-  for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.startTime.localeCompare(b.startTime));
+  Object.values(byDate).forEach((items) => items.sort((a, b) => a.startTime.localeCompare(b.startTime)));
 
-  DAY_NAMES.forEach((name, idx) => {
+  const [year, month] = state.calendarMonth.split("-").map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const leadingDays = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+  const totalCells = Math.ceil((leadingDays + daysInMonth) / 7) * 7;
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  document.getElementById("calendar-month-label").textContent = new Date(year, month - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+  for (let cellIndex = 0; cellIndex < totalCells; cellIndex += 1) {
+    const day = cellIndex - leadingDays + 1;
     const col = document.createElement("div");
-    col.className = "day-col";
-    const heading = document.createElement("h3");
-    heading.textContent = name;
+    col.className = "month-day";
+    if (day < 1 || day > daysInMonth) {
+      col.classList.add("outside");
+      cal.appendChild(col);
+      continue;
+    }
+    const dateKey = `${state.calendarMonth}-${String(day).padStart(2, "0")}`;
+    if (dateKey === todayKey) col.classList.add("today");
+    const heading = document.createElement("span");
+    heading.className = "month-day-number";
+    heading.textContent = String(day);
     col.appendChild(heading);
 
-    const items = byDay[idx];
-    if (items.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "Open schedule";
-      col.appendChild(empty);
-    } else {
+    const items = byDate[dateKey] || [];
+    if (items.length > 0) {
       items.forEach((item) => {
         const card = document.createElement("div");
         if (item.kind === "lesson") {
@@ -1363,25 +1442,24 @@ function renderCalendarData(data, calendarEvents = []) {
             <button class="del-btn" title="Delete lesson" data-lesson-id="${l.id}">×</button>
             <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
             <span class="student">${escapeHtml(l.student)}</span>
-            ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
+            <span class="subject">${l.subject ? `${escapeHtml(l.subject)} · ` : ""}${l.recurring !== false ? "Recurring" : "One-time"}</span>
           `;
         } else {
           const professionalEvent = item.event;
           const endMatch = String(professionalEvent.end || "").match(/T(\d{2}:\d{2})/);
-          const dateLabel = new Date(`${professionalEvent.date || String(professionalEvent.start).slice(0, 10)}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
           card.className = `lesson-card event-card ${escapeHtml(professionalEvent.eventType || "unavailable")}`;
           card.innerHTML = `
             <button class="del-btn" title="Delete event" data-event-id="${professionalEvent.id}">×</button>
             <span class="time">${professionalEvent.allDay ? "All day" : `${formatTime(item.startTime)}${professionalEvent.endTime || endMatch ? `–${formatTime(professionalEvent.endTime || endMatch[1])}` : ""}`}</span>
             <span class="student">${escapeHtml(professionalEvent.title || "Unavailable")}</span>
-            <span class="subject">${escapeHtml(dateLabel)} · ${escapeHtml(professionalEvent.eventType || "unavailable")}</span>
+            <span class="subject">${escapeHtml(professionalEvent.eventType || "unavailable")} · ${professionalEvent.recurrence ? "Recurring" : "One-time"}</span>
           `;
         }
         col.appendChild(card);
       });
     }
     cal.appendChild(col);
-  });
+  }
 
   cal.querySelectorAll("[data-lesson-id]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1447,10 +1525,11 @@ async function deleteProfessionalEvent(id) {
 
 async function refreshAll() {
   try {
+    const monthQuery = `?month=${encodeURIComponent(state.calendarMonth)}`;
     const [usageData, adminData, calendarData] = await Promise.all([
       adminFetch("/api/admin-stats"),
-      adminFetch("/api/admin-lessons"),
-      adminFetch("/api/calendar-events"),
+      adminFetch(`/api/admin-lessons${monthQuery}`),
+      adminFetch(`/api/calendar-events${monthQuery}`),
     ]);
     clearError();
     state.calendarEvents = calendarData.events || [];
@@ -1483,6 +1562,20 @@ async function refreshAll() {
   }
 }
 
+function shiftCalendarMonth(delta) {
+  const [year, month] = state.calendarMonth.split("-").map(Number);
+  const shifted = new Date(year, month - 1 + delta, 1);
+  state.calendarMonth = `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
+  refreshAll();
+}
+
+document.getElementById("calendar-prev-month").addEventListener("click", () => shiftCalendarMonth(-1));
+document.getElementById("calendar-next-month").addEventListener("click", () => shiftCalendarMonth(1));
+document.getElementById("calendar-today").addEventListener("click", () => {
+  state.calendarMonth = currentMonthKey();
+  refreshAll();
+});
+
 function appendAdminMessage(kind, text, isError = false) {
   const conversation = document.getElementById("admin-conversation");
   const row = document.createElement("div");
@@ -1501,7 +1594,7 @@ document.getElementById("admin-assistant-form").addEventListener("submit", async
   const submit = document.getElementById("admin-assistant-submit");
   const message = input.value.trim();
   if (!message) return;
-  const history = state.assistantHistory.slice(-6);
+  const history = state.assistantHistory.slice(-ASSISTANT_CONTEXT_LIMIT);
   appendAdminMessage("user", message);
   state.assistantHistory.push({ role: "user", content: message });
   input.value = "";
@@ -1518,7 +1611,7 @@ document.getElementById("admin-assistant-form").addEventListener("submit", async
     const reply = data.action?.reply || (data.applied ? "Schedule updated." : "I couldn't make that change.");
     responseBubble.textContent = reply;
     state.assistantHistory.push({ role: "assistant", content: reply });
-    state.assistantHistory = state.assistantHistory.slice(-6);
+    state.assistantHistory = state.assistantHistory.slice(-ASSISTANT_CONTEXT_LIMIT);
     if (data.applied || data.pending) await refreshAll();
   } catch (err) {
     responseBubble.textContent = err.message || "The scheduling assistant is unavailable.";

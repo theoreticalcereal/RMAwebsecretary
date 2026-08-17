@@ -142,6 +142,35 @@ test("uses Netlify-safe defaults for AI reasoning allocation", () => {
   });
 });
 
+test("next lesson context uses studio time and skips canceled occurrences", () => {
+  const originalTimezone = process.env.STUDIO_TIMEZONE;
+  process.env.STUDIO_TIMEZONE = "Pacific/Kiritimati";
+  try {
+    const assistant = loadAssistant();
+    const occurrences = assistant.__test.upcomingLessonOccurrences([{
+      id: 41,
+      student: "Maya",
+      subject: "Violin",
+      day_of_week: 1,
+      start_time: "02:00",
+      end_time: "02:45",
+      recurring: true,
+      active: true,
+    }], [{ lesson_id: 41, exception_date: "2026-08-18", status: "cancelled" }], {
+      now: new Date("2026-08-17T11:30:00Z"),
+      timezone: "Pacific/Kiritimati",
+      horizonDays: 14,
+    });
+
+    assert.equal(occurrences.length, 1);
+    assert.equal(occurrences[0].occurrenceDate, "2026-08-25");
+    assert.equal(occurrences[0].startTime, "02:00");
+  } finally {
+    if (originalTimezone === undefined) delete process.env.STUDIO_TIMEZONE;
+    else process.env.STUDIO_TIMEZONE = originalTimezone;
+  }
+});
+
 test("mutation intent is grounded in the requested calendar and scheduling details", () => {
   const assistant = loadAssistant();
   const hasIntent = assistant.__test.hasExplicitMutationIntent;
@@ -516,8 +545,127 @@ test("imported calendar text cannot trigger a mutation without explicit user int
 
     assert.equal(response.statusCode, 200, response.body);
     assert.equal(body.applied, false);
-    assert.match(body.action.reply, /explicitly ask/i);
+    assert.match(body.action.reply, /what would you like to change/i);
     assert.equal(store.state.calendarEvents.length, 1);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.NVIDIA_NIM_API_KEY;
+    else process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+  }
+});
+
+test("an incomplete explicit reschedule request keeps the AI's natural clarification", async () => {
+  const store = createStoreMock([{
+    id: 8,
+    student: "Maya",
+    subject: "Violin",
+    day_of_week: 3,
+    start_time: "16:00",
+    end_time: "16:45",
+    recurring: true,
+    active: true,
+  }]);
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return { choices: [{ message: { content: JSON.stringify({
+        action: "reschedule",
+        lesson_id: 8,
+        student: "Maya",
+        subject: "Violin",
+        start_time: null,
+        end_time: null,
+        reply: "Of course—what time would you like instead?",
+      }) } }] };
+    },
+  });
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() { return { id: "admin-1", email: "admin@example.com" }; },
+        isAdminUser() { return true; },
+      },
+      "./_notify": { async notifyMaintainer() { return { sent: false }; } },
+    });
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({ message: "I need to reschedule my next lesson." }),
+    });
+    const body = JSON.parse(response.body);
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(body.applied, false);
+    assert.equal(body.action.action, "unknown");
+    assert.equal(body.action.reply, "Of course—what time would you like instead?");
+    assert.equal(store.state.lessons[0].start_time, "16:00");
+  } finally {
+    global.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.NVIDIA_NIM_API_KEY;
+    else process.env.NVIDIA_NIM_API_KEY = originalApiKey;
+  }
+});
+
+test("a scheduling-detail follow-up can complete the prior explicit request", async () => {
+  const store = createStoreMock([{
+    id: 8,
+    student: "Maya",
+    subject: "Violin",
+    day_of_week: 1,
+    start_time: "16:00",
+    end_time: "16:45",
+    recurring: true,
+    active: true,
+  }]);
+  const originalFetch = global.fetch;
+  const originalApiKey = process.env.NVIDIA_NIM_API_KEY;
+  process.env.NVIDIA_NIM_API_KEY = "test-key";
+  global.fetch = async () => ({
+    ok: true,
+    async json() {
+      return { choices: [{ message: { content: JSON.stringify({
+        action: "reschedule",
+        lesson_id: 8,
+        student: "Maya",
+        subject: "Violin",
+        day_of_week: 3,
+        start_time: "16:00",
+        end_time: "16:45",
+        recurring: true,
+        reply: "Moved your violin lesson to Thursday at 4:00 PM.",
+      }) } }] };
+    },
+  });
+
+  try {
+    const assistant = loadAssistant({
+      "./_store": store.module,
+      "./_auth": {
+        async getSession() { return { id: "admin-1", email: "admin@example.com" }; },
+        isAdminUser() { return true; },
+      },
+      "./_notify": { async notifyMaintainer() { return { sent: false }; } },
+    });
+    const response = await assistant.handler({
+      httpMethod: "POST",
+      body: JSON.stringify({
+        message: "Thursday at 4 PM.",
+        history: [
+          { role: "user", content: "I need to reschedule my next lesson." },
+          { role: "assistant", content: "Of course—what time would you like instead?" },
+        ],
+      }),
+    });
+    const body = JSON.parse(response.body);
+
+    assert.equal(response.statusCode, 201, response.body);
+    assert.equal(body.applied, true);
+    assert.equal(store.state.lessons[0].day_of_week, 3);
+    assert.equal(store.state.lessons[0].start_time, "16:00");
   } finally {
     global.fetch = originalFetch;
     if (originalApiKey === undefined) delete process.env.NVIDIA_NIM_API_KEY;
@@ -1308,6 +1456,7 @@ test("includes a small recent conversation window in the AI prompt", async () =>
     });
 
     assert.match(nimPrompt, /RECENT CONVERSATION:/);
+    assert.match(nimPrompt, /SCHEDULING TOOLBOX:/);
     assert.doesNotMatch(nimPrompt, /ignore this/);
     assert.match(nimPrompt, /user: I need to move Maya's violin lesson\./);
     assert.match(nimPrompt, /assistant: Which day should I move it to\?/);

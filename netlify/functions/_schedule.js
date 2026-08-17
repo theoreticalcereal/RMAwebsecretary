@@ -375,6 +375,26 @@ function currentStudioWeek(options = {}) {
   };
 }
 
+function studioMonth(options = {}) {
+  const timezone = options.timezone || studioTimezone();
+  const match = String(options.month || "").match(/^(\d{4})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  if (!Number.isInteger(year) || monthNumber < 1 || monthNumber > 12) return null;
+  const month = `${String(year).padStart(4, "0")}-${String(monthNumber).padStart(2, "0")}`;
+  const nextYear = monthNumber === 12 ? year + 1 : year;
+  const nextMonth = monthNumber === 12 ? 1 : monthNumber + 1;
+  const rangeStart = zonedLocalToUtc(`${month}-01`, "00:00", timezone);
+  const rangeEnd = zonedLocalToUtc(
+    `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}-01`,
+    "00:00",
+    timezone
+  );
+  if (!rangeStart || !rangeEnd) return null;
+  return { month, rangeStart, rangeEnd, timezone };
+}
+
 module.exports = {
   studioTimezone,
   partsInZone,
@@ -385,4 +405,5 @@ module.exports = {
   expandLessonOccurrences,
   findCalendarEventConflict,
   currentStudioWeek,
+  studioMonth,
 };
