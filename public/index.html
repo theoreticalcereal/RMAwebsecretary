@@ -714,7 +714,7 @@ async function fetchReminderSettings() {
 
 async function refresh() {
   try {
-    const res = await fetch("/api/lessons");
+    const res = await fetch("/api/lessons", { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.detail || data.error || `Failed to load lessons (HTTP ${res.status})`);

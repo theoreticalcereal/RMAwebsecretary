@@ -1009,6 +1009,7 @@ function renderUsageRows(usageData, usageSettings) {
 async function adminFetch(url, options = {}) {
   const res = await fetch(url, {
     ...options,
+    cache: "no-store",
     credentials: "include",
     headers: {
       ...(options.headers || {}),
