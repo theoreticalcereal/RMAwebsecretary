@@ -27,6 +27,15 @@ async function writeExceptions(store, exceptions) {
   await store.setJSON("exceptions", exceptions);
 }
 
+async function readCalendarEvents(store) {
+  const data = await store.get("calendar_events", { type: "json" });
+  return Array.isArray(data) ? data : [];
+}
+
+async function writeCalendarEvents(store, events) {
+  await store.setJSON("calendar_events", Array.isArray(events) ? events : []);
+}
+
 function todayKey(userId) {
   return `usage:${new Date().toISOString().slice(0, 10)}:${userId}`;
 }
@@ -476,6 +485,8 @@ module.exports = {
   writeLessons,
   readExceptions,
   writeExceptions,
+  readCalendarEvents,
+  writeCalendarEvents,
   readUsage,
   writeUsage,
   getUsageSettings,

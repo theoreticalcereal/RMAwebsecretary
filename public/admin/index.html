@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Lesson Secretary Admin Dashboard</title>
+<title>Studio & Stage — Musician Workspace</title>
 <style>
   :root {
     --border: #d9e0e8;
@@ -424,8 +424,71 @@
     cursor: pointer;
   }
 
+  /* Studio & Stage workspace */
+  :root {
+    --border: #ddd6ce;
+    --bg: #f4f0e9;
+    --card: #fffdf9;
+    --accent: #7a3e57;
+    --accent-light: #f3e4e8;
+    --text: #241f20;
+    --muted: #746b69;
+    --surface: #f8f4ee;
+    --accent-strong: #5c2c40;
+    --shadow: 0 24px 60px rgba(61, 42, 47, .09);
+  }
+  body { background: radial-gradient(circle at 85% 0%, rgba(181,137,98,.14), transparent 30rem), var(--bg); }
+  header { padding: 28px 24px 68px; border: 0; background: linear-gradient(135deg, #251c25 0%, #442633 62%, #6e3a45 100%); }
+  .header-inner { max-width: 1180px; margin: 0 auto; display: flex; justify-content: space-between; gap: 24px; }
+  .eyebrow { color: #dfb98e; text-transform: uppercase; letter-spacing: .16em; font-size: .72rem; font-weight: 750; margin-bottom: 8px; }
+  header h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 500; letter-spacing: -.035em; }
+  header p { color: #e1d7d8; font-size: 1rem; line-height: 1.5; }
+  .student-link { color: #fff; text-decoration: none; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; padding: 9px 14px; font-size: .8rem; height: fit-content; }
+  main { max-width: 1180px; margin-top: -42px; }
+  #dashboard-view, .login-box { position: relative; }
+  .dashboard-head { background: var(--card); border: 1px solid var(--border); padding: 12px 14px; border-radius: 14px; box-shadow: 0 12px 30px rgba(61,42,47,.07); }
+  .section-heading { font-family: Georgia, "Times New Roman", serif; font-size: 1.35rem; font-weight: 500; }
+  .workspace-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); gap: 16px; margin: 18px 0 24px; }
+  .workspace-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: 0 14px 34px rgba(61,42,47,.06); }
+  .workspace-card h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; font-size: 1.25rem; margin: 0 0 5px; }
+  .workspace-card > p { color: var(--muted); font-size: .8rem; line-height: 1.45; margin: 0 0 14px; }
+  .admin-conversation { height: 250px; overflow-y: auto; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; }
+  .admin-message { display: flex; margin-bottom: 8px; font-size: .84rem; line-height: 1.42; }
+  .admin-message.user { justify-content: flex-end; }
+  .admin-message span { max-width: 88%; padding: 8px 10px; border-radius: 12px; background: #fff; border: 1px solid var(--border); white-space: pre-wrap; }
+  .admin-message.user span { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .admin-message.error span { color: var(--danger); background: #fdecea; }
+  .admin-assistant-form { display: flex; gap: 8px; }
+  .admin-assistant-form input { flex: 1; min-width: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; }
+  .primary-btn, .admin-assistant-form button, .calendar-tools button, .calendar-tools .button-link, .event-form button { border: 0; background: var(--accent); color: #fff; border-radius: 9px; padding: 10px 13px; cursor: pointer; text-decoration: none; font-size: .84rem; display: inline-flex; align-items: center; justify-content: center; }
+  .primary-btn:hover, .admin-assistant-form button:hover, .calendar-tools button:hover, .calendar-tools .button-link:hover, .event-form button:hover { background: var(--accent-strong); }
+  .calendar-tools { display: grid; gap: 12px; }
+  .calendar-tools label { display: block; color: var(--muted); font-size: .75rem; margin-bottom: 5px; }
+  .calendar-tools input[type="file"], .calendar-tools input[type="url"] { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 9px; background: #fff; }
+  .tool-row { display: flex; gap: 7px; }
+  .tool-row input { flex: 1; min-width: 0; }
+  .calendar-tools .button-link { background: #2f5c50; }
+  .sync-status { min-height: 1.1em; color: var(--muted); font-size: .76rem; }
+  .event-form { display: grid; grid-template-columns: 1.4fr .8fr 1fr 1fr 1.2fr auto; gap: 8px; align-items: end; }
+  .event-form label { color: var(--muted); font-size: .72rem; display: block; margin-bottom: 4px; }
+  .event-form input, .event-form select { width: 100%; min-width: 0; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .event-list { display: grid; gap: 8px; margin: 12px 0 24px; }
+  .event-row { display: grid; grid-template-columns: 105px minmax(150px, 1fr) minmax(190px, 1fr) auto; gap: 12px; align-items: center; padding: 11px 13px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+  .event-kind { text-transform: uppercase; letter-spacing: .08em; color: var(--accent); font-size: .68rem; font-weight: 750; }
+  .event-row strong { display: block; font-size: .88rem; }
+  .event-row small { color: var(--muted); }
+  .event-row button { border: 1px solid #e1b7b7; color: var(--danger); background: #fff; border-radius: 8px; padding: 6px 9px; cursor: pointer; }
+  .lesson-card.event-card { background: #f6ece4; border-left-color: #b17548; }
+  .lesson-card.event-card.rehearsal { background: #eaf2ef; border-left-color: #4d7568; }
+  .lesson-card.event-card.unavailable { background: #eee9e2; border-left-color: #8f8780; }
+  .operations-divider { margin-top: 38px; padding-top: 24px; border-top: 1px solid var(--border); }
+
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+
   @media (max-width: 800px) {
     .calendar { grid-template-columns: repeat(2, 1fr); }
+    .workspace-grid { grid-template-columns: 1fr; }
+    .event-form { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 620px) {
     main { padding: 18px 14px 28px; }
@@ -445,14 +508,23 @@
       flex-direction: column;
     }
     .calendar { grid-template-columns: 1fr; }
+    .header-inner { flex-direction: column; }
+    .event-form { grid-template-columns: 1fr; }
+    .event-row { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Lesson Secretary Admin Dashboard</h1>
-  <p>Manage lessons directly and see today's assistant usage.</p>
+  <div class="header-inner">
+    <div>
+      <div class="eyebrow">Studio &amp; Stage</div>
+      <h1>Musician workspace</h1>
+      <p>One schedule for teaching, rehearsals, concerts, and the time between.</p>
+    </div>
+    <a class="student-link" href="/">Student view →</a>
+  </div>
 </header>
 
 <main>
@@ -483,6 +555,60 @@
 
     <div class="stats-row" id="stats-row"></div>
 
+    <div class="workspace-grid">
+      <section class="workspace-card" aria-labelledby="musician-assistant-title">
+        <h2 id="musician-assistant-title">Scheduling assistant</h2>
+        <p>Create or move concerts, rehearsals, blocked time, and lessons using plain language. Scheduling only—no practice or artistic coaching.</p>
+        <div class="admin-conversation" id="admin-conversation" aria-live="polite">
+          <div class="admin-message"><span>What would you like to schedule? Try “Add a rehearsal September 8 from 6–8 PM at the recital hall.”</span></div>
+        </div>
+        <form class="admin-assistant-form" id="admin-assistant-form">
+          <input id="admin-assistant-input" type="text" placeholder="Ask about or change your schedule…" autocomplete="off" aria-label="Message the scheduling assistant" required />
+          <button id="admin-assistant-submit" type="submit">Send</button>
+        </form>
+      </section>
+
+      <section class="workspace-card" aria-labelledby="calendar-sync-title">
+        <h2 id="calendar-sync-title">Apple Calendar</h2>
+        <p>Import an Apple Calendar export or refresh from an optional public iCloud calendar link. Imported details remain visible only here.</p>
+        <div class="calendar-tools">
+          <div>
+            <label for="ics-file">Import an .ics file</label>
+            <div class="tool-row">
+              <input id="ics-file" type="file" accept=".ics,text/calendar" />
+              <button id="import-ics-btn" type="button">Import</button>
+            </div>
+          </div>
+          <div>
+            <label for="icloud-url">Optional public iCloud calendar URL</label>
+            <div class="tool-row">
+              <input id="icloud-url" type="url" placeholder="webcal://…icloud.com/…" />
+              <button id="import-icloud-btn" type="button">Refresh</button>
+            </div>
+          </div>
+          <a class="button-link" id="export-ics-link" href="/api/calendar-events?format=ics" download="studio-stage.ics">Export combined .ics</a>
+          <div class="sync-status" id="calendar-sync-status" aria-live="polite"></div>
+        </div>
+      </section>
+    </div>
+
+    <h2 class="section-heading">Add a professional commitment</h2>
+    <div class="workspace-card">
+      <form class="event-form" id="event-form">
+        <div><label for="event-title">Title</label><input id="event-title" type="text" placeholder="Faculty recital" required /></div>
+        <div><label for="event-type">Type</label><select id="event-type"><option value="concert">Concert</option><option value="rehearsal">Rehearsal</option><option value="unavailable">Unavailable</option></select></div>
+        <div><label for="event-date">Date</label><input id="event-date" type="date" required /></div>
+        <div><label for="event-start">Start</label><input id="event-start" type="time" required /></div>
+        <div><label for="event-end">End</label><input id="event-end" type="time" required /></div>
+        <button type="submit">Add</button>
+      </form>
+    </div>
+    <div class="event-list" id="professional-events"></div>
+
+    <h2 class="section-heading">Combined weekly calendar</h2>
+    <div class="calendar" id="calendar"></div>
+
+    <h2 class="section-heading operations-divider">Studio operations</h2>
     <h2 class="section-heading">Today's assistant usage</h2>
     <table class="usage-table" id="usage-table">
       <thead>
@@ -632,8 +758,6 @@
       </form>
     </div>
 
-    <h2 class="section-heading">Calendar</h2>
-    <div class="calendar" id="calendar"></div>
   </div>
 </main>
 
@@ -644,6 +768,8 @@ const state = {
   pendingAutoRefresh: null,
   pendingOpen: false,
   pendingCount: 0,
+  calendarEvents: [],
+  assistantHistory: [],
 };
 
 function formatTime(hhmm) {
@@ -1195,16 +1321,24 @@ function renderIdentityRows(identities) {
   });
 }
 
-function renderCalendarData(data) {
+function renderCalendarData(data, calendarEvents = []) {
   const cal = document.getElementById("calendar");
   cal.innerHTML = "";
 
   const byDay = {};
   for (let i = 0; i < 7; i++) byDay[i] = [];
-  (data.lessons || [])
+  (data.lessonOccurrences || data.lessons || [])
     .filter((l) => l.active !== false)
-    .forEach((l) => byDay[l.day_of_week].push(l));
-  for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.start_time.localeCompare(b.start_time));
+    .forEach((lesson) => byDay[lesson.day_of_week].push({ kind: "lesson", startTime: lesson.start_time, lesson }));
+  calendarEvents.forEach((event) => {
+    const dateText = event.date || String(event.start || "").slice(0, 10);
+    const date = new Date(`${dateText}T12:00:00`);
+    if (Number.isNaN(date.getTime())) return;
+    const dayIndex = (date.getDay() + 6) % 7;
+    const startMatch = String(event.start || "").match(/T(\d{2}:\d{2})/);
+    byDay[dayIndex].push({ kind: "event", startTime: event.startTime || startMatch?.[1] || "00:00", event });
+  });
+  for (let i = 0; i < 7; i++) byDay[i].sort((a, b) => a.startTime.localeCompare(b.startTime));
 
   DAY_NAMES.forEach((name, idx) => {
     const col = document.createElement("div");
@@ -1213,31 +1347,45 @@ function renderCalendarData(data) {
     heading.textContent = name;
     col.appendChild(heading);
 
-    const lessons = byDay[idx];
-    if (lessons.length === 0) {
+    const items = byDay[idx];
+    if (items.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "No lessons";
+      empty.textContent = "Open schedule";
       col.appendChild(empty);
     } else {
-      lessons.forEach((l) => {
+      items.forEach((item) => {
         const card = document.createElement("div");
-        card.className = "lesson-card";
-        card.innerHTML = `
-          <button class="del-btn" title="Delete" data-id="${l.id}">x</button>
-          <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
-          <span class="student">${escapeHtml(l.student)}</span>
-          ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
-        `;
+        if (item.kind === "lesson") {
+          const l = item.lesson;
+          card.className = "lesson-card";
+          card.innerHTML = `
+            <button class="del-btn" title="Delete lesson" data-lesson-id="${l.id}">×</button>
+            <span class="time">${formatTime(l.start_time)}–${formatTime(l.end_time)}</span>
+            <span class="student">${escapeHtml(l.student)}</span>
+            ${l.subject ? `<span class="subject">${escapeHtml(l.subject)}</span>` : ""}
+          `;
+        } else {
+          const professionalEvent = item.event;
+          const endMatch = String(professionalEvent.end || "").match(/T(\d{2}:\d{2})/);
+          const dateLabel = new Date(`${professionalEvent.date || String(professionalEvent.start).slice(0, 10)}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+          card.className = `lesson-card event-card ${escapeHtml(professionalEvent.eventType || "unavailable")}`;
+          card.innerHTML = `
+            <button class="del-btn" title="Delete event" data-event-id="${professionalEvent.id}">×</button>
+            <span class="time">${professionalEvent.allDay ? "All day" : `${formatTime(item.startTime)}${professionalEvent.endTime || endMatch ? `–${formatTime(professionalEvent.endTime || endMatch[1])}` : ""}`}</span>
+            <span class="student">${escapeHtml(professionalEvent.title || "Unavailable")}</span>
+            <span class="subject">${escapeHtml(dateLabel)} · ${escapeHtml(professionalEvent.eventType || "unavailable")}</span>
+          `;
+        }
         col.appendChild(card);
       });
     }
     cal.appendChild(col);
   });
 
-  cal.querySelectorAll(".del-btn").forEach((btn) => {
+  cal.querySelectorAll("[data-lesson-id]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const id = Number(btn.dataset.id);
+      const id = Number(btn.dataset.lessonId);
       if (!confirm("Delete this lesson?")) return;
       try {
         await adminFetch("/api/admin-lessons", {
@@ -1251,24 +1399,75 @@ function renderCalendarData(data) {
       }
     });
   });
+
+  cal.querySelectorAll("[data-event-id]").forEach((btn) => {
+    btn.addEventListener("click", () => deleteProfessionalEvent(Number(btn.dataset.eventId)));
+  });
+}
+
+function renderProfessionalEvents(events) {
+  const list = document.getElementById("professional-events");
+  const upcoming = (events || []).filter((event) => String(event.end || "") >= new Date().toISOString().slice(0, 10)).slice(0, 12);
+  if (!upcoming.length) {
+    list.innerHTML = `<div class="empty">No upcoming professional commitments. Add one above, ask the assistant, or import an Apple Calendar.</div>`;
+    return;
+  }
+  list.innerHTML = upcoming.map((event) => {
+    const start = new Date(event.start);
+    const end = new Date(event.end);
+    const dateLabel = Number.isNaN(start.getTime()) ? event.start : start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    const timeLabel = event.allDay || Number.isNaN(start.getTime())
+      ? "All day"
+      : `${start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}–${end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    return `<div class="event-row">
+      <div class="event-kind">${escapeHtml(event.eventType || "unavailable")}</div>
+      <div><strong>${escapeHtml(event.title || "Unavailable")}</strong><small>${escapeHtml(event.location || "Private commitment")}</small></div>
+      <div><strong>${escapeHtml(dateLabel)}</strong><small>${escapeHtml(timeLabel)} · ${escapeHtml(String(event.source || "manual").replace(/^file:/, "Imported: "))}</small></div>
+      <button type="button" data-list-event-id="${event.id}">Remove</button>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-list-event-id]").forEach((button) => {
+    button.addEventListener("click", () => deleteProfessionalEvent(Number(button.dataset.listEventId)));
+  });
+}
+
+async function deleteProfessionalEvent(id) {
+  if (!confirm("Remove this professional commitment?")) return;
+  try {
+    await adminFetch("/api/calendar-events", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    await refreshAll();
+  } catch (err) {
+    showError(`Couldn't remove event: ${err.message}`);
+  }
 }
 
 async function refreshAll() {
   try {
-    const [usageData, adminData] = await Promise.all([adminFetch("/api/admin-stats"), adminFetch("/api/admin-lessons")]);
+    const [usageData, adminData, calendarData] = await Promise.all([
+      adminFetch("/api/admin-stats"),
+      adminFetch("/api/admin-lessons"),
+      adminFetch("/api/calendar-events"),
+    ]);
     clearError();
+    state.calendarEvents = calendarData.events || [];
 
     const statsRow = document.getElementById("stats-row");
     statsRow.innerHTML = `
-      <div class="stat-card"><div class="value">${usageData.totalVisitorsToday}</div><div class="label">Users today</div></div>
-      <div class="stat-card"><div class="value">${usageData.totalPromptsToday}</div><div class="label">Total prompts today</div></div>
-      <div class="stat-card"><div class="value">${usageData.visitorsAtLimit}</div><div class="label">Users at daily limit</div></div>
+      <div class="stat-card"><div class="value">${(adminData.lessons || []).filter((lesson) => lesson.active !== false).length}</div><div class="label">Active lessons</div></div>
+      <div class="stat-card"><div class="value">${state.calendarEvents.length}</div><div class="label">Professional commitments</div></div>
+      <div class="stat-card"><div class="value">${(adminData.pendingChanges || []).length}</div><div class="label">Requests awaiting review</div></div>
+      <div class="stat-card"><div class="value">${usageData.totalPromptsToday}</div><div class="label">Assistant requests today</div></div>
     `;
 
     const usageRows = document.getElementById("usage-tbody");
     renderUsageRows(usageData.usage || [], adminData.usageSettings);
 
-    renderCalendarData(adminData);
+    renderCalendarData(adminData, calendarData.occurrences || state.calendarEvents);
+    renderProfessionalEvents(state.calendarEvents);
     renderApprovalSection(adminData);
     const defaultLimitInput = document.getElementById("default-limit");
     if (defaultLimitInput) {
@@ -1283,6 +1482,117 @@ async function refreshAll() {
     showError(`Couldn't refresh dashboard: ${err.message}`);
   }
 }
+
+function appendAdminMessage(kind, text, isError = false) {
+  const conversation = document.getElementById("admin-conversation");
+  const row = document.createElement("div");
+  row.className = `admin-message ${kind}${isError ? " error" : ""}`;
+  const bubble = document.createElement("span");
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  conversation.appendChild(row);
+  conversation.scrollTop = conversation.scrollHeight;
+  return bubble;
+}
+
+document.getElementById("admin-assistant-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("admin-assistant-input");
+  const submit = document.getElementById("admin-assistant-submit");
+  const message = input.value.trim();
+  if (!message) return;
+  const history = state.assistantHistory.slice(-6);
+  appendAdminMessage("user", message);
+  state.assistantHistory.push({ role: "user", content: message });
+  input.value = "";
+  input.disabled = true;
+  submit.disabled = true;
+  submit.textContent = "Thinking…";
+  const responseBubble = appendAdminMessage("assistant", "Reviewing your schedule…");
+  try {
+    const data = await adminFetch("/api/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, history }),
+    });
+    const reply = data.action?.reply || (data.applied ? "Schedule updated." : "I couldn't make that change.");
+    responseBubble.textContent = reply;
+    state.assistantHistory.push({ role: "assistant", content: reply });
+    state.assistantHistory = state.assistantHistory.slice(-6);
+    if (data.applied || data.pending) await refreshAll();
+  } catch (err) {
+    responseBubble.textContent = err.message || "The scheduling assistant is unavailable.";
+    responseBubble.parentElement.classList.add("error");
+  } finally {
+    input.disabled = false;
+    submit.disabled = false;
+    submit.textContent = "Send";
+    input.focus();
+  }
+});
+
+async function runCalendarImport(payload, pendingText) {
+  const status = document.getElementById("calendar-sync-status");
+  status.textContent = pendingText;
+  status.style.color = "var(--muted)";
+  try {
+    const result = await adminFetch("/api/calendar-events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    status.textContent = `Imported ${result.imported} new and updated ${result.updated} event${result.updated === 1 ? "" : "s"}.${result.skipped ? ` Skipped ${result.skipped} incomplete event${result.skipped === 1 ? "" : "s"}.` : ""}`;
+    status.style.color = "var(--success)";
+    await refreshAll();
+  } catch (err) {
+    status.textContent = err.message || "Calendar import failed.";
+    status.style.color = "var(--danger)";
+  }
+}
+
+document.getElementById("import-ics-btn").addEventListener("click", async () => {
+  const input = document.getElementById("ics-file");
+  const file = input.files?.[0];
+  if (!file) {
+    document.getElementById("calendar-sync-status").textContent = "Choose an .ics file first.";
+    return;
+  }
+  const calendarText = await file.text();
+  await runCalendarImport({ operation: "import_ics", calendarText, sourceName: file.name }, `Importing ${file.name}…`);
+  input.value = "";
+});
+
+document.getElementById("import-icloud-btn").addEventListener("click", async () => {
+  const input = document.getElementById("icloud-url");
+  const url = input.value.trim();
+  if (!url) {
+    document.getElementById("calendar-sync-status").textContent = "Paste a public iCloud calendar URL first.";
+    return;
+  }
+  await runCalendarImport({ operation: "import_url", url }, "Refreshing from iCloud…");
+});
+
+document.getElementById("event-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const date = document.getElementById("event-date").value;
+  const event = {
+    title: document.getElementById("event-title").value,
+    eventType: document.getElementById("event-type").value,
+    start: `${date}T${document.getElementById("event-start").value}:00`,
+    end: `${date}T${document.getElementById("event-end").value}:00`,
+  };
+  try {
+    await adminFetch("/api/calendar-events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "save_event", event }),
+    });
+    e.target.reset();
+    await refreshAll();
+  } catch (err) {
+    showError(`Couldn't add event: ${err.message}`);
+  }
+});
 
 document.getElementById("manual-form").addEventListener("submit", async (e) => {
   e.preventDefault();

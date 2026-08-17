@@ -28,6 +28,7 @@ const {
 } = require("./_store");
 const { getAdminSession } = require("./_auth");
 const { sendOffTimeProposalEmail } = require("./_notify");
+const { currentStudioWeek, expandLessonOccurrences } = require("./_schedule");
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SUPPORTED_MODES = new Set(["manual", "automatic"]);
@@ -495,8 +496,11 @@ exports.handler = async (event) => {
         ...change,
         requestedByEmail: resolveRequesterEmail(userIdentityMap, change),
       }));
+      const week = currentStudioWeek();
       return jsonResponse(200, {
         lessons,
+        lessonOccurrences: expandLessonOccurrences(lessons, exceptions, week),
+        week,
         exceptions,
         dayNames: DAY_NAMES,
         approvalSettings,

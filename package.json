@@ -2,6 +2,9 @@
   "name": "lesson-secretary",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "dependencies": {
     "@netlify/blobs": "^8.1.0"
   }

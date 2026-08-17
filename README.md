@@ -1,21 +1,52 @@
-# Lesson Secretary
+# Studio & Stage
 
-A lesson scheduling app with a public calendar view, a natural language
-assistant powered by NVIDIA's NIM API, and an email-session-secured admin
-dashboard for the maintainer. Runs on Netlify with Blobs for storage, so
-there's no separate database to manage.
+A scheduling workspace for a music professional who teaches students and
+attends concerts. It combines a student-facing lesson calendar, a role-aware
+natural-language scheduling assistant powered by NVIDIA's NIM API, private
+professional commitments, and Apple Calendar interoperability. It runs on
+Netlify with Blobs for storage, so there's no separate database to manage.
+
+The assistant is intentionally scheduling-only. It handles availability,
+lesson requests, cancellations, rescheduling, concerts, rehearsals, and
+private blocked time; it does not provide practice, repertoire, or performance
+guidance.
 
 ## How it's laid out
 
-- **Public page** (`/`): shows the calendar and assistant chat. Visitors
+- **Student page** (`/`): shows weekly studio availability and assistant chat. Visitors
   must sign in with email + verification code before using the assistant.
-  The public page also now shows a thread of past assistant/user messages.
-- **Admin dashboard** (`/admin`): uses the same email OTP session as public
-  pages, with an admin allowlist. Lets the maintainer add, edit, and delete
-  lessons directly, and shows a live breakdown of today's assistant usage.
-- **Assistant**: capped at 5 prompts per day, per logged-in user, tracked
+  Professional events are exposed here only as `Unavailable`; their titles,
+  locations, notes, sources, and types stay private.
+- **Musician workspace** (`/admin`): uses the same email OTP session with an
+  admin allowlist. It includes the musician's scheduling assistant, combined
+  lesson/professional calendar, event agenda, lesson management, pending
+  approvals, working hours, and usage controls.
+- **Assistant**: role-aware and capped at 5 prompts per day, per logged-in user, tracked
   with authenticated sessions. Once a user hits the cap, the app tells them it can't help
-  further today and emails the maintainer once.
+  further today and emails the maintainer once. Student lesson changes follow
+  approval rules; musician concert, rehearsal, and blocked-time changes apply
+  directly after conflict checks.
+
+## Apple Calendar import and export
+
+From `/admin`, the musician can:
+
+1. Export a calendar from Apple Calendar as an `.ics` file and upload it in
+   the **Apple Calendar** panel.
+2. Optionally paste a public `webcal://` or `https://` iCloud Calendar URL and
+   refresh it on demand. Only `icloud.com` hosts are accepted.
+3. Download a combined `.ics` containing active lessons and professional
+   commitments using **Export combined .ics**.
+
+Timezone-aware recurring professional events are expanded into portable UTC
+occurrences for the next two years during export. This avoids client-specific
+`VTIMEZONE` behavior while preserving daylight-saving changes.
+
+Imports are de-duplicated by iCalendar `UID`: later imports update matching
+events rather than creating copies. Imported entries are always private from
+students. Public iCloud links are bearer URLs—anyone who has one may be able to
+read that calendar—so use a dedicated calendar and revoke the link in Apple
+Calendar if it is exposed.
 
 ## What's included
 
@@ -31,7 +62,12 @@ there's no separate database to manage.
   login session
 - `netlify/functions/auth-session.js`: reads/writes the shared session state
 - `netlify/functions/lessons.js`: public, **read-only**. Returns the
-  lesson list for the calendar view.
+  lesson list plus sanitized unavailable blocks for the student calendar.
+- `netlify/functions/calendar-events.js`: admin-only professional event CRUD,
+  Apple `.ics` import, restricted iCloud URL refresh, and combined `.ics`
+  export.
+- `netlify/functions/_ics.js`: iCalendar parsing, UID merging, conflict checks,
+  lesson invitations, and combined calendar generation.
 - `netlify/functions/admin-lessons.js`: admin-only CRUD for lessons using
   session auth
 - `netlify/functions/admin-stats.js`: admin-only usage stats for today
@@ -57,6 +93,7 @@ MAINTAINER_EMAIL=you@example.com  # where the "limit reached" email goes
 RESEND_FROM_EMAIL=onboarding@resend.dev # optional: defaults to onboarding@resend.dev
 ADMIN_EMAILS=admin@example.com   # comma-separated list of admin emails
 AUTH_CODE_SECRET=pick-a-long-random-secret # optional: extra hardening for OTP hashing
+STUDIO_TIMEZONE=America/Chicago  # optional: IANA timezone, defaults to America/Chicago
 ```
 
 Set these locally in a `.env` file (already gitignored, picked up
@@ -69,6 +106,7 @@ netlify env:set MAINTAINER_EMAIL you@example.com
 netlify env:set RESEND_FROM_EMAIL onboarding@resend.dev
 netlify env:set AUTH_CODE_SECRET pick-a-long-random-secret
 netlify env:set ADMIN_EMAILS admin@example.com
+netlify env:set STUDIO_TIMEZONE America/Chicago
 ```
 
 `RESEND_API_KEY` is required for email verification flow and maintainer alerts.
@@ -157,20 +195,27 @@ or moving to Netlify's background functions for this endpoint.
 ## Try it
 
 **Public page:**
-1. Ask the assistant to add a lesson, it should show up on the calendar.
+1. Ask the assistant to add a lesson; it should show up on the calendar.
 2. Ask something ambiguous, it should ask a clarifying question instead of
    guessing.
-3. Send 5 requests, then a 6th, confirm you get the "can't help further
+3. Import a private event in the musician workspace, then confirm the public
+   calendar displays only `Unavailable` at that time.
+4. Send 5 requests, then a 6th, confirm you get the "can't help further
    today" message and (if Resend is configured) the maintainer gets one
    email.
 
 **Admin dashboard:**
 1. Go to `/admin`, sign in with an email listed in `ADMIN_EMAILS`.
-2. Add a lesson directly, confirm it shows up on both the admin and public
+2. Ask the assistant to add a concert and confirm it appears in the professional
+   agenda and combined calendar.
+3. Import an Apple Calendar `.ics`, then import it again and confirm matching
+   UIDs update rather than duplicate.
+4. Export the combined `.ics` and open it in Apple Calendar.
+5. Add a lesson directly, confirm it shows up on both the admin and public
    calendars.
-3. Check the usage table, it should reflect prompts used by any logged-in user
+6. Check the usage table; it should reflect prompts used by any logged-in user
    who has used the assistant today.
-4. Delete a lesson, confirm it disappears from both views.
+7. Delete a lesson, confirm it disappears from both views.
 
 ## Deploying
 
@@ -180,6 +225,17 @@ netlify deploy --prod
 ```
 
 ## Known limitations and possible next steps
+
+- iCloud URL refresh is on demand. The app does not store Apple credentials or
+  run background sync jobs.
+- Imported weekly recurrences support `BYDAY`, `INTERVAL`, and `UNTIL` for
+  availability, conflict checks, and two-year export expansion. More complex
+  monthly/yearly recurrence rules are stored, but only their initial occurrence
+  appears in the current prototype's workspace and export.
+- Apple `TZID` values and floating times are normalized to UTC using
+  `STUDIO_TIMEZONE`; exports therefore remain portable without custom
+  `VTIMEZONE` blocks. Set `STUDIO_TIMEZONE` to the musician's IANA timezone
+  before importing calendars or creating events.
 
 - Admin access is not protected by a shared password. It is tied to the same
   email-session identity model as the public page, with an allowlist in
